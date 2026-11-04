@@ -9,7 +9,7 @@ import {
   queryableFilterFieldNames,
 } from "../pms/schema";
 import { CONFIRM_LABELS } from "./protocol";
-import { getServerTimeResult } from "./server-time";
+import { PROMPT_CONTEXT_INSTRUCTIONS } from "../../shared/prompt-context";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -20,22 +20,6 @@ export interface ClientToolResult {
 export interface DonnaRunContext {
   clientToolResults: Record<string, ClientToolResult>;
 }
-
-const serverTimeParameters = z
-  .object({
-    timeZone: z.string().nullable(),
-  })
-  .strict();
-
-const getServerTime = tool({
-  name: "get_server_time",
-  description:
-    "Return the current server date and time. Use this whenever the user asks for the current date or time.",
-  parameters: serverTimeParameters,
-  async execute({ timeZone }) {
-    return JSON.stringify(getServerTimeResult({ timeZone }));
-  },
-});
 
 // Every tool that needsApproval must include these fields in its parameters.
 // The model fills them when it makes the tool call, so the approval card the
@@ -159,6 +143,9 @@ const pmsLookupParameters = z
     lookup: z
       .enum(queryableLookupNames() as [string, ...string[]])
       .describe("Which PMS lookup to run."),
+    date: z.string().nullable().describe("Required for getMyAttendance: YYYY-MM-DD in India; use the hidden donna_context timestamp for today/yesterday. null for other lookups."),
+    logDate: z.string().nullable().describe("Required for getMyWorklogs: YYYY-MM-DD in India. Resolve today/yesterday using the hidden donna_context timestamp. null for other lookups."),
+    issueId: z.string().nullable().describe("Required for getIssueContext and getIssueWorklogs: the issue ID exactly as supplied by the user, including any prefix. A number alone is allowed for unique resolution. null for other lookups."),
     filters: z
       .array(pmsLookupFilterParameters)
       .nullable()
@@ -184,7 +171,7 @@ const pmsLookupParameters = z
 const pmsLookup = tool<typeof pmsLookupParameters, DonnaRunContext, string>({
   name: "pms_lookup",
   description:
-    "Read live data from the PMS with the user's session: leave balances, existing leave days, or leave application statuses. Runs silently in the extension; use it freely to answer PMS data questions. Never invent PMS data instead of calling this. Supports filters, column selection, and a row limit — narrow the result to what the question needs instead of fetching whole datasets.",
+    "Read live data from the PMS with the user's session: leave balances, existing leave days, leave application statuses, issue context, worklog categories, existing issue worklogs, and attendance. Runs silently in the extension; use it freely to answer PMS data questions. Never invent PMS data instead of calling this. Supports filters, column selection, and a row limit — narrow the result to what the question needs instead of fetching whole datasets.",
   parameters: pmsLookupParameters,
   // Client tools always "need approval" — the pause/resume roundtrip is how
   // execution reaches the extension. The extension auto-approves this one
@@ -199,25 +186,14 @@ const pmsLookup = tool<typeof pmsLookupParameters, DonnaRunContext, string>({
   },
 });
 
-// Fields schema is generated from the manifest's input slots. With a second
-// action this becomes a per-action union keyed on actionName; the extension
-// executor independently re-validates fields against the manifest either way.
-const submitPmsActionParameters = z
-  .object({
-    actionName: z
-      .enum(actionNames() as [string, ...string[]])
-      .describe("Which PMS manifest action to execute."),
-    fields: z
-      .object(
-        actionFieldsShape(
-          getPmsBundle().actions.create_leave_application.inputs,
-        ),
-      )
-      .strict()
-      .describe("The user-facing form fields, collected conversationally."),
-    ...approvalPresentationFields,
-  })
-  .strict();
+// Root remains an object for strict tool schemas. The nested fields union uses
+// each manifest's exact shape; execution revalidates it against actionName.
+export const submitPmsActionParameters = z.object({
+  actionName: z.enum(actionNames() as [string, ...string[]]),
+  fields: z.union(Object.values(getPmsBundle().actions).map(manifest =>
+    z.object(actionFieldsShape(manifest.inputs)).strict())),
+  ...approvalPresentationFields,
+}).strict();
 
 const submitPmsAction = tool<
   typeof submitPmsActionParameters,
@@ -226,7 +202,7 @@ const submitPmsAction = tool<
 >({
   name: "submit_pms_action",
   description:
-    "Submit one PMS action (e.g. a leave application) for real, using the user's PMS session in the extension. This creates an actual record and routes it into the PMS workflow. The extension shows the user an approval card before executing — call this directly once the fields are collected; never ask for verbal confirmation in chat first.",
+    "Submit one PMS action (e.g. a leave application or worklog) for real, using the user's PMS session in the extension. This creates an actual record and routes it into the PMS workflow. The extension shows the user an approval card before executing — call this directly once the fields are collected; never ask for verbal confirmation in chat first.",
   parameters: submitPmsActionParameters,
   needsApproval: async () => true,
   async execute(_input, runContext, details) {
@@ -256,23 +232,25 @@ export const donnaAgent = new Agent<DonnaRunContext>({
 Help the user clearly and directly. Keep answers concise unless the task benefits from detail.
 Remember and use relevant information from the current conversation.
 For tool-heavy work, use brief commentary updates before and between tool calls so the user can follow meaningful progress. Put only the completed answer in the final answer phase, and do not repeat the entire work log there.
-Use get_server_time for current date or time questions.
+${PROMPT_CONTEXT_INSTRUCTIONS}
 Use get_current_page_context only when the user's request depends on the active browser page. Explain why page access is needed before requesting it when that is not obvious.
 
 PMS (the user's Quixy project-management system):
-Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates with get_server_time first.
+Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates using the hidden donna_context timestamp.
 When a lookup can return many rows, pass filters (by status, leave type, dates, or application id) and columns so only the data the question needs is fetched — check list_pms_capabilities for each lookup's filterable fields, valid values, and column names.
+For attendance and login/logout-time questions, use pms_lookup with lookup=getMyAttendance and date. Use the hidden context for relative dates. In Time is attendance login and Out Time is logout, already in local India display format. If no record is returned, say no attendance record was found for that date; do not claim the user was absent or did not log in. Never invent missing Out Time or Total Hours, and distinguish attendance hours from logged worklog hours.
+For questions about hours already logged today or on a specific day across all issues, use pms_lookup with lookup=getMyWorklogs and logDate. Resolve relative dates using the hidden donna_context timestamp. Report the returned totalHours and entryCount; do not treat a truncated detail list as the total, and do not sum issue-specific worklogs as if they were all of the user's worklogs.
+For worklogs: first use pms_lookup with lookup=getIssueContext and the user's exact issueId (never replace an explicit prefix), and lookup=getWorklogCategories. If the ID is missing, mismatched or ambiguous, stop and ask the user; never switch to a suggested ID without their correction. A numeric ID must resolve uniquely. Put the returned full Issue Id and exact Summary into issueId and issueSummary. Do not invent category labels or issue details. Billable hours default to log hours: do not ask for them separately. Pass billableHours as null unless the user explicitly gives billable hours, in which case preserve that value, including zero. Include full issue ID, summary, category, log date, log hours, billable hours and description in the approval. Only request a new approval after a changed issue/category is resolved. Never retry a submission automatically after an uncertain result.
 Use list_pms_capabilities when the user asks what PMS actions you support, or to check an action's fields and rules before collecting them.
 For PMS actions (submit_pms_action): collect the user-facing fields conversationally. Check the business rules from list_pms_capabilities early and tell the user immediately if their request violates one (for example leave ranges crossing a calendar month or ending after the 25th) instead of collecting the rest of the fields first.
-Submitting: once all required fields are collected, call submit_pms_action directly — do NOT ask for verbal or typed confirmation first. The extension shows the user an approval card with the action details before anything executes; that card is the one and only confirmation step, and declining it cancels the submission. Put the key details (leave type, dates, days, reason) in the approvalDescription so the card is self-explanatory. Set acknowledgment to true; the user's approval on the card is the acknowledgment. Dates are YYYY-MM-DD.
-The submission executes locally in the user's extension; report the returned record ID to the user, and never claim a submission happened unless the tool returned success.
+Submitting: once all required fields are collected, call submit_pms_action directly — do NOT ask for verbal or typed confirmation first. The extension shows the user an approval card with the action details before anything executes; that card is the one and only confirmation step, and declining it cancels the submission. Put the key details (leave type, dates, days, reason) in the approvalDescription so the card is self-explanatory. For leave applications, set acknowledgment to true; the user's approval on the card is the acknowledgment. Dates are YYYY-MM-DD.
+The submission executes locally in the user's extension. Confirm success briefly using meaningful details from the successful tool result: for worklogs, include the hours, issue ID and category (for example "Added 1.5 hours to QKA-49715 under Code Review."). For leave, confirm the leave type and dates and include a human-readable application number when available. Do not display internal record IDs or app-data UUIDs unless the user explicitly asks for them; they remain available in the tool result. Never claim a submission happened unless the tool returned success.
 
 Never claim that you inspected a page or used a tool unless the tool returned successfully.
 If the user declines page access, continue without it when possible and state the limitation.
 Do not invent tool results, private data, or completed actions.
 Do not use em dashes in your final answer. Use a colon or parentheses instead.`,
   tools: [
-    getServerTime,
     getCurrentPageContext,
     pmsLookup,
     submitPmsAction,

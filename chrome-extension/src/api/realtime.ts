@@ -34,24 +34,3 @@ export async function createRealtimeClientSecret(
   }
   return body.value;
 }
-
-export async function executeRealtimeServerTool(
-  name: "get_server_time",
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  const backendUrl = await getBackendUrl();
-  const response = await fetch(`${backendUrl}/api/realtime/tools`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, arguments: args }),
-    signal,
-  });
-
-  if (!response.ok) throw new Error(await readError(response));
-  const body: unknown = await response.json();
-  if (!body || typeof body !== "object" || !("data" in body)) {
-    throw new Error("The backend returned an invalid tool result.");
-  }
-  return body.data;
-}

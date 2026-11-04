@@ -1,6 +1,8 @@
 // Assembles the PMS manifest bundle served to the extension and used to
 // generate Donna's tool schemas + capability catalog. Adding a new PMS
 // action = write its manifest file and register it here; nothing else.
+import { worklogManifest, worklogLookups } from "./manifests/worklog";
+import { attendanceLookups } from "./manifests/attendance";
 import type { PmsBundle } from "./types";
 import {
   leaveApplicationManifest,
@@ -9,14 +11,15 @@ import {
 
 // Bump when the bundle shape (not just its content) changes, so the
 // extension can reject bundles it doesn't understand.
-export const PMS_BUNDLE_VERSION = 1;
+export const PMS_BUNDLE_VERSION = 4;
 
 export function getPmsBundle(): PmsBundle {
   return {
     version: PMS_BUNDLE_VERSION,
-    lookups: { ...leaveLookups },
+    lookups: { ...leaveLookups, ...worklogLookups, ...attendanceLookups },
     actions: {
       create_leave_application: leaveApplicationManifest,
+      add_worklog: worklogManifest,
     },
   };
 }

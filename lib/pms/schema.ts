@@ -64,6 +64,7 @@ export function capabilitiesCatalog(): unknown {
     lookups: Object.entries(bundle.lookups)
       .filter(([, lookup]) => lookup.queryable)
       .map(([name, lookup]) => ({
+        parameters: lookup.source.kind === "issueContext" || lookup.source.kind === "worklogReport" ? { issueId: "Required: full issue ID or unique numeric suffix" } : lookup.source.kind === "dailyWorklogs" ? { logDate: "Required: YYYY-MM-DD in India; resolve relative dates using the hidden donna_context timestamp" } : lookup.source.kind === "attendanceReport" ? { date: "Required: YYYY-MM-DD in India" } : {},
         resolverName: name,
         description: lookup.description,
         ...lookupQueryCapabilities(lookup.source),
@@ -121,8 +122,15 @@ function availableColumnsOf(source: PmsLookupSource): string[] {
       return source.availableColumns ?? [];
     case "datasourceRows":
       return source.outputColumns;
-    default:
+    case "dataTableRow":
       return source.referencedElements;
+    case "issueContext":
+    case "worklogReport":
+    case "dailyWorklogs":
+    case "attendanceReport":
+      return source.availableColumns;
+    default:
+      return [];
   }
 }
 

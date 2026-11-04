@@ -1,3 +1,4 @@
+import { currentPromptContext, PROMPT_CONTEXT_INSTRUCTIONS } from "../../../shared/prompt-context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   OpenAIRealtimeWebRTC,
@@ -17,7 +18,7 @@ This is a spoken conversation. Respond naturally, warmly, and concisely. Prefer 
 
 Before the first tool call, give one very short progress update: ideally 3 to 7 words and never more than 10. State only the immediate action, such as "Checking your leave calendar." Between tool calls, speak again only when the next step changes meaningfully, using the same word limit. Do not restate the user's request, explain routine steps, mention tool names, or preview the answer. Keep these updates present but minimal. After tools finish, answer the user's question directly without narrating implementation details.
 
-Use get_server_time for current date/time questions and to resolve relative dates before date-sensitive PMS queries. Use pms_lookup for live leave balances, existing leave days, and leave application statuses. Never invent tool results or claim a tool succeeded unless it returned successfully.
+${PROMPT_CONTEXT_INSTRUCTIONS} Use pms_lookup for live leave balances, existing leave days, leave application statuses, issue context, worklog categories and issue worklogs. For issue lookups, preserve the exact prefix the user supplied; never silently replace an issue ID or choose among ambiguous matches. Worklog and leave submissions require the text-chat approval interface; direct the user there for writes. For attendance login/logout questions, use pms_lookup with getMyAttendance and date from the hidden timestamp. In Time and Out Time are local India attendance times. No rows means no record returned, not proof of absence; never invent missing Out Time or Total Hours. Never invent tool results or claim a tool succeeded unless it returned successfully.
 
 When the user clearly asks to end or stop the voice conversation, or says goodbye, first say one brief spoken goodbye and then call end_voice_session. After the tool returns, produce no additional speech. Do not call it for an ordinary pause, silence, or an ambiguous phrase.
 
@@ -331,10 +332,11 @@ export function useVoiceSession(
         });
       };
 
+      const voiceInstructions = () => BASE_INSTRUCTIONS + conversationContext(messages) + "\n\n" + currentPromptContext();
       const agent = new RealtimeAgent({
         name: "Donna",
         voice: "marin",
-        instructions: BASE_INSTRUCTIONS + conversationContext(messages),
+        instructions: voiceInstructions(),
         tools: createVoiceTools({
           signal: abortController.signal,
           requestEnd: () => {
@@ -456,6 +458,11 @@ export function useVoiceSession(
           markInterrupted();
           finishVoiceEndIfReady();
           return;
+        }
+        if (event.type === "input_audio_buffer.speech_started") {
+          // Refresh hidden instructions for every spoken prompt without inserting
+          // a transcript item or waiting for a separate backend/tool response.
+          session.transport.updateSessionConfig({ instructions: voiceInstructions() });
         }
         if (event.type === "input_audio_buffer.speech_started" && speakingRef.current) {
           markInterrupted();

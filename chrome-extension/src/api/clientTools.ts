@@ -70,6 +70,18 @@ const LOOKUP_OPERATORS = ["equals", "contains", "between"] as const;
  * names against the manifest, so this only guards the value shapes. */
 function parseLookupQuery(args: Record<string, unknown>): PmsLookupQuery {
   const query: PmsLookupQuery = {};
+  if (args.date !== undefined && args.date !== null) {
+    if (typeof args.date !== "string") throw new Error("Invalid attendance date.");
+    query.date = args.date;
+  }
+  if (args.logDate !== undefined && args.logDate !== null) {
+    if (typeof args.logDate !== "string") throw new Error("Invalid worklog date.");
+    query.logDate = args.logDate;
+  }
+  if (args.issueId !== undefined && args.issueId !== null) {
+    if (typeof args.issueId !== "string" || !args.issueId.trim()) throw new Error("Invalid issueId.");
+    query.issueId = args.issueId;
+  }
 
   if (args.filters !== undefined && args.filters !== null) {
     if (!Array.isArray(args.filters)) {

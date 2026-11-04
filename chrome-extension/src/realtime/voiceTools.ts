@@ -1,11 +1,6 @@
 import { tool } from "@openai/agents/realtime";
 import { z } from "zod";
 import { executeClientTool } from "../api/clientTools";
-import { executeRealtimeServerTool } from "../api/realtime";
-
-const serverTimeParameters = z
-  .object({ timeZone: z.string().nullable() })
-  .strict();
 
 // Hardcoded to match the manifest bundle (same convention as the lookup
 // names below): an enum stops the model from guessing near-miss names.
@@ -34,6 +29,9 @@ const LOOKUP_COLUMNS = [
   "Employee Code",
   "Manager Name",
   "Manager Email Id",
+  "Issue Id", "Project Id", "Record Id", "Issue Type", "Assignee", "Summary",
+  "In Time", "Out Time", "Total Hours", "Status",
+  "Worklog Id", "Worklog Date", "Worklog Hours", "Worklog Description", "Worklog Category", "Department",
   // getLeaveBalance columns
   "Balance Leaves",
   "Entitled Leaves",
@@ -76,7 +74,15 @@ const pmsLookupParameters = z
       "getLeaveBalance",
       "getLeaveCalendar",
       "getLeaveApplicationStatus",
+      "getIssueContext",
+      "getWorklogCategories",
+      "getIssueWorklogs",
+      "getMyWorklogs",
+      "getMyAttendance",
     ]),
+    date: z.string().nullable().describe("Required for getMyAttendance: India YYYY-MM-DD from hidden context. null otherwise."),
+    logDate: z.string().nullable().describe("Required for getMyWorklogs: India YYYY-MM-DD; resolve relative dates using the hidden donna_context timestamp. null otherwise."),
+    issueId: z.string().nullable().describe("Required for getIssueContext and getIssueWorklogs; preserve the exact user-supplied prefix. null for other lookups."),
     filters: z
       .array(pmsLookupFilterParameters)
       .nullable()
@@ -107,20 +113,9 @@ interface VoiceToolOptions {
 export function createVoiceTools({ requestEnd, signal }: VoiceToolOptions) {
   return [
     tool({
-      name: "get_server_time",
-      description:
-        "Return the current server date and time. Use this to resolve current or relative dates before date-sensitive PMS lookups.",
-      parameters: serverTimeParameters,
-      async execute(input) {
-        signal.throwIfAborted();
-        const result = await executeRealtimeServerTool("get_server_time", input, signal);
-        return JSON.stringify(result);
-      },
-    }),
-    tool({
       name: "pms_lookup",
       description:
-        "Read live PMS leave balances, existing leave days, or leave application statuses using the user's signed-in extension session. Never invent PMS data instead of calling this tool.",
+        "Read live PMS leave data, issue context, worklog categories, existing issue worklogs, or attendance using the user's signed-in extension session. Never invent PMS data instead of calling this tool.",
       parameters: pmsLookupParameters,
       async execute(input, _runContext, details) {
         signal.throwIfAborted();

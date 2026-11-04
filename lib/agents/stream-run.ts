@@ -8,6 +8,7 @@ import {
   type RunToolApprovalItem,
 } from "@openai/agents";
 import { donnaAgent, type DonnaRunContext } from "./donna";
+import { withPromptContext } from "../../shared/prompt-context";
 import { savePendingRun } from "./pending-runs";
 import {
   CONFIRM_LABELS,
@@ -165,10 +166,14 @@ function approvalPresentation(args: Record<string, unknown>): {
     typeof args.approvalTitle === "string" && args.approvalTitle.trim()
       ? args.approvalTitle.trim().slice(0, 80)
       : "Allow Donna to perform this action?";
-  const description =
+  let description =
     typeof args.approvalDescription === "string" && args.approvalDescription.trim()
       ? args.approvalDescription.trim().slice(0, 240)
       : "Donna needs your approval before it can continue with this request.";
+  if (args.actionName === "add_worklog" && args.fields && typeof args.fields === "object") {
+    const fields = args.fields as Record<string, unknown>;
+    description = `${fields.issueId}: ${fields.issueSummary}\n${fields.logDate}; ${fields.category}; ${fields.logHours} hours (${fields.billableHours ?? fields.logHours} billable)\n${fields.description}`;
+  }
   const confirmLabel = CONFIRM_LABELS.includes(args.confirmLabel as ConfirmLabel)
     ? (args.confirmLabel as ConfirmLabel)
     : "Allow";
@@ -221,7 +226,7 @@ export function streamDonnaRun({
       try {
         abortController.signal.throwIfAborted();
         const isResumedRun = input instanceof RunState;
-        const result = await run(donnaAgent, input, {
+        const result = await run(donnaAgent, typeof input === "string" ? withPromptContext(input) : input, {
           stream: true,
           signal: abortController.signal,
           maxTurns: 8,

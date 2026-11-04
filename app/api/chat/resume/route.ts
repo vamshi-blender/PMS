@@ -1,3 +1,4 @@
+import { withPromptContext } from "@/shared/prompt-context";
 import { z } from "zod";
 import { RunState } from "@openai/agents";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
@@ -137,7 +138,7 @@ export async function POST(request: Request) {
     state.reject(interruption, {
       message: parsed.data.error ?? "The user declined this request.",
     });
-    if (parsed.data.instruction) state.addInput(parsed.data.instruction);
+    if (parsed.data.instruction) state.addInput(withPromptContext(parsed.data.instruction));
   }
 
   const stream = streamDonnaRun({

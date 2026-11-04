@@ -1,11 +1,11 @@
-// Shared shape of the PMS manifest bundle (extension-side mirror). The bundle is DATA: it describes
+// Shared shape of the PMS manifest bundle. The bundle is DATA: it describes
 // PMS actions (forms) and lookups declaratively, and is served to the Chrome
 // extension at runtime via GET /api/pms/manifests. The extension contains
 // only a generic interpreter, so changing/adding actions here needs a server
 // deploy, never an extension re-zip.
 //
 // NOTE: this file is duplicated (kept in sync by hand) at
-// lib/pms/types.ts — same convention as protocol.ts.
+// chrome-extension/src/pms/types.ts — same convention as protocol.ts.
 
 /** A value in the final payload: a constant, or a dotted-path reference into
  * the execution context (namespaces: input.*, user.*, plus one namespace per
@@ -36,6 +36,8 @@ export interface PmsDatasourceRowsSource {
   outputColumns: string[];
   conditionLabel: string;
   keyRef: string;
+  /** Return one projected row for an execution resolver. */
+  single?: boolean;
 }
 
 /** A report column pms_lookup filters may target. `name` is the exact
@@ -60,10 +62,55 @@ export interface PmsReportGridSource {
   availableColumns?: string[];
 }
 
+export interface PmsIssueContextSource {
+  kind: "issueContext";
+  viewId: string;
+  keyRef: string;
+  availableColumns: string[];
+}
+
+export interface PmsLookupOptionsSource {
+  kind: "lookupOptions";
+  lookupTypeId: string;
+}
+
+export interface PmsWorklogReportSource {
+  kind: "worklogReport";
+  reportId: string;
+  viewId: string;
+  keyRef: string;
+  availableColumns: string[];
+}
+
+export interface PmsCalendarSource {
+  kind: "calendar";
+  calendarId: string;
+}
+
+export interface PmsDailyWorklogsSource {
+  kind: "dailyWorklogs";
+  dataTableId: string;
+  functionId: string;
+  referencedElements: string[];
+  availableColumns: string[];
+}
+
+export interface PmsAttendanceSource {
+  kind: "attendanceReport";
+  reportId: string;
+  availableColumns: string[];
+}
+
 export type PmsLookupSource =
   | PmsDataTableRowSource
   | PmsDatasourceRowsSource
-  | PmsReportGridSource;
+  | PmsReportGridSource
+  | PmsIssueContextSource
+  | PmsLookupOptionsSource
+  | PmsWorklogReportSource
+  | PmsCalendarSource
+  | PmsDailyWorklogsSource
+  | PmsAttendanceSource;
 
 export interface PmsLookupDefinition {
   description: string;
@@ -88,6 +135,12 @@ export interface PmsLookupFilter {
  * applied in the extension before rows reach the model, so it saves context
  * tokens on every lookup kind; filters additionally save the fetch itself. */
 export interface PmsLookupQuery {
+  /** Attendance business date, YYYY-MM-DD in India. */
+  date?: string;
+  /** Full issue ID or unique numeric suffix; used only by issue lookups. */
+  issueId?: string;
+  /** India calendar date for daily worklog totals. */
+  logDate?: string;
   filters?: PmsLookupFilter[];
   columns?: string[];
   /** Max rows to return (default and hard cap: the executor's row cap). */
@@ -142,7 +195,9 @@ export interface PmsActionManifest {
   appId: string;
   appName: string;
   /** GET /api/App/GetNextSerialNumber parameter. */
-  serialAppElementId: string;
+  serialAppElementId?: string;
+  /** Selects the supported computed-field strategy. */
+  derive?: "leave" | "worklog";
   /** Execution resolvers: context namespace → lookup name in the bundle. */
   resolvers: Record<string, string>;
   inputs: PmsInputSlot[];

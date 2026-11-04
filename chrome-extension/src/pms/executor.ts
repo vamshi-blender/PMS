@@ -1,8 +1,12 @@
-// The generic PMS engine. It has zero knowledge of any specific form —
-// everything action-specific (fields, rules, GUIDs, payload) comes from the
-// server-hosted manifest bundle. It validates inputs, runs the declared
+// The PMS engine runs server-hosted manifests with supported calculation
+// strategies for leave and worklogs. Fields, source IDs, and payload templates
+// come from the bundle. It validates inputs, runs the declared
 // resolvers, computes derived fields, renders the payload template, and
 // fires the submit. Errors are phrased so Donna can relay them to the user.
+import {
+  deriveWorklog, fetchCategoryLabels, fetchWorklogCalendar, normalizeIssueId,
+  resolveIssue, validateWorklogInputs, type WorklogCalendar,
+} from "./worklog";
 import { getPmsUserDetails } from "../api/pmsAuth";
 import { getPmsBundle } from "./bundle";
 import {
@@ -17,6 +21,9 @@ import {
 } from "./derive";
 import {
   fetchDataTableRow,
+  fetchIssueWorklogs,
+  fetchDailyWorklogs,
+  fetchAttendanceReport,
   fetchDatasourceRows,
   fetchNextSerialNumber,
   fetchReportGrid,
@@ -181,7 +188,9 @@ function validateColumns(columns: string[], available: string[]): void {
 function availableColumnsOf(source: PmsLookupSource): string[] {
   if (source.kind === "reportGrid") return source.availableColumns ?? [];
   if (source.kind === "datasourceRows") return source.outputColumns;
-  return source.referencedElements;
+  if (source.kind === "dataTableRow") return source.referencedElements;
+  if (source.kind === "issueContext" || source.kind === "worklogReport" || source.kind === "dailyWorklogs" || source.kind === "attendanceReport") return source.availableColumns;
+  return [];
 }
 
 async function runLookupSource(
@@ -199,6 +208,55 @@ async function runLookupSource(
   }
   const rowCap = Math.min(query?.top ?? MAX_LOOKUP_ROWS, MAX_LOOKUP_ROWS);
 
+  if (source.kind === "attendanceReport") {
+    if (!query?.date) throw new Error("getMyAttendance requires date as YYYY-MM-DD (India).");
+    parseInputDate(query.date);
+    const date = query.date.trim();
+    const user = context.user as Record<string, string>;
+    const page = await fetchAttendanceReport(source.reportId, date, signal);
+    for (const row of page.rows) {
+      if (row.Date !== date || row["Employee Code"] !== user.employeeCode) {
+        throw new Error("PMS returned attendance for a different date or employee; no record can be reported.");
+      }
+      for (const field of ["In Time", "Out Time", "Total Hours", "Status"]) {
+        if (row[field] !== null && row[field] !== undefined && typeof row[field] !== "string") {
+          throw new Error("PMS returned invalid attendance values.");
+        }
+      }
+    }
+    return {
+      date, timeZone: "Asia/Kolkata", recordFound: page.rows.length > 0,
+      entryCount: page.total ?? page.rows.length,
+      rows: page.rows.slice(0, rowCap).map(row => projectColumns(row, columns?.length ? columns : source.availableColumns)),
+      truncated: (page.total ?? page.rows.length) > Math.min(rowCap, page.rows.length) || page.rows.length >= 100,
+    };
+  }
+
+  if (source.kind === "dailyWorklogs") {
+    if (!query?.logDate) throw new Error("getMyWorklogs requires logDate in YYYY-MM-DD (India).");
+    const date = quixyUtcDate(parseInputDate(query.logDate));
+    const user = context.user as Record<string, string>;
+    const rows = await fetchDailyWorklogs(source, user.emailId, date, signal);
+    let totalHours = 0;
+    for (const row of rows) {
+      const hours = row["Worklog Hours"];
+      const rowDate = String(row["Worklog Date"] ?? "");
+      if (rowDate.slice(0, 19) !== date.slice(0, 19) ||
+          (typeof hours !== "number" && (typeof hours !== "string" || !/^\d+(\.\d+)?$/.test(hours))) ||
+          !Number.isFinite(Number(hours)) || Number(hours) < 0) {
+        throw new Error("PMS returned an invalid date or hours; the daily total is unavailable.");
+      }
+      totalHours += Number(hours);
+    }
+    if (!Number.isFinite(totalHours)) throw new Error("PMS returned invalid daily hours.");
+    return {
+      logDate: query.logDate, timeZone: "Asia/Kolkata",
+      totalHours: Math.round(totalHours * 1e8) / 1e8, entryCount: rows.length,
+      rows: rows.slice(0, rowCap).map(row => projectColumns(row, columns?.length ? columns : source.availableColumns)),
+      truncated: rows.length > rowCap,
+    };
+  }
+
   if (source.kind === "reportGrid") {
     const filters = query?.filters?.length
       ? buildReportFilters(source, query.filters)
@@ -212,9 +270,22 @@ async function runLookupSource(
     };
   }
 
+  if (source.kind === "lookupOptions") return fetchCategoryLabels(source.lookupTypeId, signal);
+  if (source.kind === "calendar") return fetchWorklogCalendar(source.calendarId, signal);
+
   const keyValue = contextValue(context, source.keyRef);
   if (typeof keyValue !== "string" || !keyValue) {
     throw new Error(`PMS lookup key "${source.keyRef}" is unavailable.`);
+  }
+
+  if (source.kind === "issueContext" || source.kind === "worklogReport") {
+    const issue = await resolveIssue(source.viewId, keyValue, signal);
+    if (source.kind === "issueContext") return columns?.length ? projectColumns(issue, columns) : issue;
+    const user = context.user as Record<string, string>;
+    const page = await fetchIssueWorklogs(source.reportId, user.userId, issue["Issue Id"], signal);
+    const selected = columns?.length ? columns : source.availableColumns;
+    return { rows: page.rows.slice(0, rowCap).map(row => projectColumns(row, selected)),
+      truncated: (page.total ?? page.rows.length) > rowCap || page.rows.length >= 100 };
   }
 
   if (source.kind === "dataTableRow") {
@@ -223,10 +294,20 @@ async function runLookupSource(
   }
 
   const rows = await fetchDatasourceRows(source, keyValue, signal);
+  // Datasource APIs may ignore OutputColumns and return employee master data.
+  // Always project locally; never expose unrelated employee data to the model.
+  if (source.single) {
+    if (rows.length !== 1) throw new Error("PMS expected exactly one employee department record.");
+    const row = projectColumns(rows[0], source.outputColumns);
+    if (source.outputColumns.some(column => row[column] === undefined || row[column] === null)) {
+      throw new Error("PMS employee record is missing a required field.");
+    }
+    return row;
+  }
   return {
     rows: rows
       .slice(0, rowCap)
-      .map((row) => (columns?.length ? projectColumns(row, columns) : row)),
+      .map((row) => projectColumns(row, columns?.length ? columns : source.outputColumns)),
     truncated: rows.length > rowCap,
   };
 }
@@ -242,7 +323,16 @@ export async function runPmsLookup(
   if (!lookup || !lookup.queryable) {
     throw new Error(`"${lookupName}" is not an available PMS lookup.`);
   }
-  const context: ExecutionContext = { user: await buildUserContext(signal) };
+  if (query?.issueId !== undefined && lookup.source.kind !== "issueContext" && lookup.source.kind !== "worklogReport") {
+    throw new Error("This lookup does not accept issueId.");
+  }
+  if (query?.date !== undefined && lookup.source.kind !== "attendanceReport") {
+    throw new Error("This lookup does not accept date.");
+  }
+  if (query?.logDate !== undefined && lookup.source.kind !== "dailyWorklogs") {
+    throw new Error("This lookup does not accept logDate.");
+  }
+  const context: ExecutionContext = { user: await buildUserContext(signal), input: { issueId: query?.issueId } };
   return runLookupSource(lookup.source, context, query, signal);
 }
 
@@ -399,7 +489,15 @@ export async function executePmsAction(
   const manifest = bundle.actions[actionName];
   if (!manifest) throw new Error(`"${actionName}" is not a known PMS action.`);
 
+  inputs = { ...inputs };
+  if (manifest.derive === "worklog" && (inputs.billableHours === undefined || inputs.billableHours === null)) {
+    inputs.billableHours = inputs.logHours;
+  }
   validateInputs(manifest, inputs);
+  if (manifest.derive === "worklog") {
+    validateWorklogInputs(inputs);
+    inputs.issueId = normalizeIssueId(inputs.issueId, true);
+  }
   applyInputRules(manifest.rules, inputs);
 
   const user = await buildUserContext(signal);
@@ -414,12 +512,25 @@ export async function executePmsAction(
     context[namespace] = await runLookupSource(lookup.source, context, undefined, signal);
   }
 
-  const derive = buildDeriveNamespace(inputs, user);
+  const isWorklog = manifest.derive === "worklog";
+  if (isWorklog) {
+    const issue = context.issue as Record<string, string>;
+    if (issue["Issue Id"].toUpperCase() !== inputs.issueId || issue.Summary !== inputs.issueSummary) {
+      throw new Error("The issue details changed. Look up the issue again and request a new approval.");
+    }
+    const categories = context.categories as { values: string[] };
+    if (!categories.values.includes(String(inputs.category))) {
+      throw new Error("The category is not active. Look up worklog categories and request a new approval.");
+    }
+  }
+  const derive = isWorklog
+    ? deriveWorklog(inputs, context.calendar as WorklogCalendar)
+    : buildDeriveNamespace(inputs, user);
   context.derive = derive;
 
   applyDataRules(manifest.rules, inputs, derive.effectiveDays as number, context);
 
-  context.serial = await fetchNextSerialNumber(
+  if (manifest.serialAppElementId) context.serial = await fetchNextSerialNumber(
     manifest.serialAppElementId,
     manifest.appId,
     user.organizationId,
@@ -431,12 +542,17 @@ export async function executePmsAction(
     payload[key] = renderValue(spec, context);
   }
 
+  signal?.throwIfAborted();
   const { appDataId } = await saveAppData(manifest.submitPath, payload, signal);
 
   return {
-    recordId: context.serial,
+    recordId: context.serial ?? appDataId,
     appDataId,
-    summary: {
+    summary: isWorklog ? {
+      action: actionName, issueId: (context.issue as Record<string, string>)["Issue Id"],
+      issueSummary: inputs.issueSummary, category: inputs.category, logDate: inputs.logDate,
+      logHours: inputs.logHours, billableHours: inputs.billableHours, status: "Completed",
+    } : {
       action: actionName,
       applicationId: context.serial,
       leaveType: inputs.leaveType,

@@ -7,6 +7,7 @@ import type {
   PmsDataTableRowSource,
   PmsDatasourceRowsSource,
   PmsReportGridSource,
+  PmsDailyWorklogsSource,
 } from "./types";
 
 type NameValue = { Name?: unknown; Value?: unknown };
@@ -68,6 +69,7 @@ export async function fetchDatasourceRows(
     DataSourceReferenceConditions: [
       {
         DataSourceCollectionConditionLabelName: source.conditionLabel,
+        IsFocused: true,
         Value: keyValue,
       },
     ],
@@ -152,4 +154,109 @@ export async function saveAppData(
     throw new Error(message);
   }
   return { appDataId: typeof data.Data === "string" ? data.Data : "" };
+}
+
+export async function getPmsJson(path: string, signal?: AbortSignal): Promise<unknown> {
+  const response = await pmsFetch(path, { signal });
+  if (!response.ok) throw new Error(`PMS call ${path} failed (${response.status}).`);
+  const text = await response.text();
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+export interface ReportPage {
+  rows: Record<string, unknown>[];
+  total?: number;
+}
+
+function reportPage(value: unknown): ReportPage {
+  const data = value as { Status?: unknown; results?: unknown; __count?: unknown };
+  if (data?.Status !== true || typeof data.results !== "string") {
+    throw new Error("PMS returned an invalid report response.");
+  }
+  const rows: unknown = JSON.parse(data.results);
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+    throw new Error("PMS returned invalid report rows.");
+  }
+  return {
+    rows,
+    total: typeof data.__count === "number" ? data.__count : undefined,
+  };
+}
+
+export async function fetchIssueCandidates(
+  viewId: string, issueId: string, skip: number, signal?: AbortSignal,
+): Promise<ReportPage> {
+  const query = new URLSearchParams({ skip: String(skip), take: "100", viewId });
+  return reportPage(await postJson(`/api/Report/GetViewResult?${query}`, {
+    orderByFields: "",
+    filters: {
+      searchString: "", columns: "Issue Id,Summary,Issue Type,Assignee,Project Name",
+      groupedColumns: "", columnsOrder: "", resizedColumns: [], pageSize: 100,
+      filters: [], sorting: [],
+      CustomUserViewFilters: [{
+        Order: 0, ColumnName: "Issue Id", ElementType: "TextBox",
+        ConditionType: "Contains", Value: issueId, IsEditable: true,
+        IsVisible: false, SecondValue: "", SelectedValues: [""],
+      }],
+    },
+  }, signal));
+}
+
+export async function fetchIssueWorklogs(
+  reportId: string, userId: string, issueId: string, signal?: AbortSignal,
+): Promise<ReportPage> {
+  return reportPage(await postJson("/api/Report/GetListReportData", {
+    ReportId: reportId, UserId: userId,
+    ListScreenReportFilters: [{ DataSourceCollectionConditionLabelName: "Issue Id", Value: issueId }],
+    skip: 0, take: 100, IsFromReportMappingDrillDown: false, IsChartBasedReportGridCall: false,
+  }, signal));
+}
+
+/** Attendance dates are literal business dates, not shifted Quixy datetimes.
+ * Verified: shifting April 2 to April 1 18:30 returns both days. */
+export async function fetchAttendanceReport(
+  reportId: string, date: string, signal?: AbortSignal,
+): Promise<ReportPage> {
+  const data = await postJson("/api/Report/GetGridReportData", {
+    reportId, skip: 0, top: 100, orderByFields: "Date desc",
+    filters: [{
+      ElementType: "Date", LabelName: "Date", Condition: "Custom", Type: "textType",
+      DefaultValue: date, SecondValue: date, MappingType: "Mapped",
+    }],
+    groupAggregate: null, isShowGrid: false, isChartBasedReportGridCall: false,
+  }, signal) as { results?: unknown; errorMessage?: unknown; ErrorMessage?: unknown; __count?: unknown };
+  // This report sets Status=false even when it returns valid rows; use the
+  // actual error/rows contract instead of treating that flag as failure.
+  if (data?.errorMessage || data?.ErrorMessage || typeof data?.results !== "string") {
+    throw new Error("PMS could not retrieve attendance. Please try again.");
+  }
+  let rows: unknown;
+  try { rows = JSON.parse(data.results); } catch { throw new Error("PMS returned invalid attendance data."); }
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+    throw new Error("PMS returned invalid attendance rows.");
+  }
+  const total = typeof data.__count === "number" && Number.isFinite(data.__count) && data.__count >= 0
+    ? data.__count : undefined;
+  if (!rows.length && total && total > 0) throw new Error("PMS returned incomplete attendance data.");
+  return { rows, total };
+}
+
+/** All rows for one employee/date; unlike fetchDataTableRow, do not take only row 0. */
+export async function fetchDailyWorklogs(
+  source: PmsDailyWorklogsSource, email: string, date: string, signal?: AbortSignal,
+): Promise<Record<string, unknown>[]> {
+  if (!email) throw new Error("The logged-in user's email is unavailable.");
+  const data = await postJson("/api/DataTable/GetReferencedDataTableData", {
+    DataTableId: source.dataTableId, DataTableFunctionId: source.functionId,
+    ReferencedElements: source.referencedElements.join(","),
+    DataTableDataReferenceDataDTOs: [
+      { IsFocused: false, ReferenceName: "Worklog Date", Value: date, SelectedValue: date },
+      { IsFocused: true, ReferenceName: "Worklog Email Id", Value: email, SelectedValue: "" },
+    ],
+  }, signal);
+  if (!Array.isArray(data) || data.some(row => !Array.isArray(row) ||
+      row.some(cell => !cell || typeof cell.Name !== "string" || !("Value" in cell)))) {
+    throw new Error("PMS returned invalid daily worklogs; the total could not be calculated.");
+  }
+  return data.map(rowToObject);
 }
