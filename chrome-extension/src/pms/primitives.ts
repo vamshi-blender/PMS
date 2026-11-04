@@ -11,9 +11,10 @@ import type {
 
 type NameValue = { Name?: unknown; Value?: unknown };
 
-async function postJson(path: string, body: unknown): Promise<unknown> {
+async function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
   const response = await pmsFetch(path, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -35,6 +36,7 @@ function rowToObject(row: NameValue[]): Record<string, unknown> {
 export async function fetchDataTableRow(
   source: PmsDataTableRowSource,
   keyValue: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const data = await postJson("/api/DataTable/GetReferencedDataTableData", {
     DataTableId: source.dataTableId,
@@ -43,7 +45,7 @@ export async function fetchDataTableRow(
     DataTableDataReferenceDataDTOs: [
       { ReferenceName: source.keyReference, IsFocused: true, Value: keyValue },
     ],
-  });
+  }, signal);
   const rows = Array.isArray(data) ? (data as NameValue[][]) : [];
   if (!rows[0]) {
     throw new Error(
@@ -57,6 +59,7 @@ export async function fetchDataTableRow(
 export async function fetchDatasourceRows(
   source: PmsDatasourceRowsSource,
   keyValue: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>[]> {
   const data = await postJson("/api/Datasource/GetReferencedDataSourceData", {
     DataSourceId: source.dataSourceId,
@@ -68,7 +71,7 @@ export async function fetchDatasourceRows(
         Value: keyValue,
       },
     ],
-  });
+  }, signal);
   const rows = Array.isArray(data) ? (data as NameValue[][]) : [];
   return rows.map(rowToObject);
 }
@@ -90,7 +93,7 @@ export interface QuixyReportFilter {
 /** GetGridReportData — rows of a datasource report (read-side screens). */
 export async function fetchReportGrid(
   source: PmsReportGridSource,
-  options?: { filters?: QuixyReportFilter[]; top?: number },
+  options?: { filters?: QuixyReportFilter[]; top?: number; signal?: AbortSignal },
 ): Promise<Record<string, unknown>[]> {
   const data = await postJson("/api/Report/GetGridReportData", {
     reportId: source.reportId,
@@ -101,7 +104,7 @@ export async function fetchReportGrid(
     groupAggregate: null,
     isShowGrid: false,
     isChartBasedReportGridCall: false,
-  });
+  }, options?.signal);
   // The grid endpoint wraps its rows as a JSON string in `results`.
   const results = (data as { results?: unknown })?.results;
   if (typeof results !== "string") return [];
@@ -114,9 +117,10 @@ export async function fetchNextSerialNumber(
   appElementId: string,
   appId: string,
   organizationId: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const query = new URLSearchParams({ appElementId, appId, organizationId });
-  const response = await pmsFetch(`/api/App/GetNextSerialNumber?${query}`);
+  const response = await pmsFetch(`/api/App/GetNextSerialNumber?${query}`, { signal });
   if (!response.ok) {
     throw new Error(`PMS serial number fetch failed (${response.status}).`);
   }
@@ -133,8 +137,9 @@ export interface SaveAppDataResult {
 export async function saveAppData(
   submitPath: string,
   payload: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<SaveAppDataResult> {
-  const data = (await postJson(submitPath, payload)) as {
+  const data = (await postJson(submitPath, payload, signal)) as {
     Success?: unknown;
     Data?: unknown;
     ErrorMessage?: unknown;

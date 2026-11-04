@@ -101,9 +101,10 @@ const pmsLookupParameters = z
 
 interface VoiceToolOptions {
   requestEnd: () => void;
+  signal: AbortSignal;
 }
 
-export function createVoiceTools({ requestEnd }: VoiceToolOptions) {
+export function createVoiceTools({ requestEnd, signal }: VoiceToolOptions) {
   return [
     tool({
       name: "get_server_time",
@@ -111,7 +112,8 @@ export function createVoiceTools({ requestEnd }: VoiceToolOptions) {
         "Return the current server date and time. Use this to resolve current or relative dates before date-sensitive PMS lookups.",
       parameters: serverTimeParameters,
       async execute(input) {
-        const result = await executeRealtimeServerTool("get_server_time", input);
+        signal.throwIfAborted();
+        const result = await executeRealtimeServerTool("get_server_time", input, signal);
         return JSON.stringify(result);
       },
     }),
@@ -121,6 +123,7 @@ export function createVoiceTools({ requestEnd }: VoiceToolOptions) {
         "Read live PMS leave balances, existing leave days, or leave application statuses using the user's signed-in extension session. Never invent PMS data instead of calling this tool.",
       parameters: pmsLookupParameters,
       async execute(input, _runContext, details) {
+        signal.throwIfAborted();
         const callId = details?.toolCall?.callId ?? crypto.randomUUID();
         const result = await executeClientTool({
           runId: "realtime",
@@ -132,7 +135,7 @@ export function createVoiceTools({ requestEnd }: VoiceToolOptions) {
           description: "Read the requested PMS data using your signed-in session.",
           confirmLabel: "Continue",
           requiresApproval: true,
-        });
+        }, signal);
         return JSON.stringify(result);
       },
     }),
@@ -142,6 +145,7 @@ export function createVoiceTools({ requestEnd }: VoiceToolOptions) {
         "End the current Realtime voice conversation. Use only when the user clearly asks to end, stop, leave, or says goodbye. Say one brief goodbye before calling this tool.",
       parameters: z.object({}).strict(),
       async execute() {
+        signal.throwIfAborted();
         requestEnd();
         return JSON.stringify({ ending: true });
       },

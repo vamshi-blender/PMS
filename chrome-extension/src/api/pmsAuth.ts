@@ -111,7 +111,9 @@ export async function pmsFetch(
   path: string,
   init: RequestInit = {},
 ): Promise<Response> {
+  init.signal?.throwIfAborted();
   const token = await getPmsAccessToken();
+  init.signal?.throwIfAborted();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
   return fetch(`${PMS_API_URL}${path}`, { ...init, headers });
@@ -129,8 +131,8 @@ export interface PmsUser {
   organizationId: string;
 }
 
-export async function getPmsUserDetails(): Promise<PmsUser> {
-  const response = await pmsFetch("/api/User/GetUserDetails");
+export async function getPmsUserDetails(signal?: AbortSignal): Promise<PmsUser> {
+  const response = await pmsFetch("/api/User/GetUserDetails", { signal });
   if (!response.ok) {
     throw new Error(`PMS user lookup failed (${response.status}).`);
   }

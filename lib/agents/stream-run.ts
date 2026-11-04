@@ -37,6 +37,7 @@ interface StreamDonnaRunOptions {
   input: string | RunState<DonnaRunContext, typeof donnaAgent>;
   conversationId: string;
   signal: AbortSignal;
+  context?: DonnaRunContext;
 }
 
 interface TextSegment {
@@ -195,21 +196,30 @@ export function streamDonnaRun({
   input,
   conversationId,
   signal,
+  context = { clientToolResults: {} },
 }: StreamDonnaRunOptions): ReadableStream<Uint8Array> {
   const abortController = new AbortController();
-  const abort = () => abortController.abort();
+  let cancelled = false;
+  const abort = () => abortController.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: ChatStreamEvent) => controller.enqueue(encodeEvent(event));
+      const send = (event: ChatStreamEvent) => {
+        if (!cancelled && !abortController.signal.aborted) {
+          controller.enqueue(encodeEvent(event));
+        }
+      };
       send({
         type: "response.started",
         requestId: crypto.randomUUID(),
         conversationId,
       });
 
+      let completed: Promise<void> | undefined;
       try {
+        abortController.signal.throwIfAborted();
         const isResumedRun = input instanceof RunState;
         const result = await run(donnaAgent, input, {
           stream: true,
@@ -218,10 +228,15 @@ export function streamDonnaRun({
           ...(isResumedRun
             ? {}
             : {
-                context: { clientToolResults: {} },
+                context,
                 conversationId,
               }),
         });
+
+        completed = result.completed;
+        // Observe early rejections while consuming the stream; always await
+        // SDK tool cleanup before considering cancellation complete.
+        void completed.catch(() => {});
 
         let startsNewSegment = true;
         let fallbackSegmentNumber = 0;
@@ -321,6 +336,7 @@ export function streamDonnaRun({
         }
 
         await result.completed;
+        abortController.signal.throwIfAborted();
 
         const approval = result.interruptions
           .map(asToolApprovalInterruption)
@@ -329,6 +345,8 @@ export function streamDonnaRun({
         if (approval) {
           const runId = savePendingRun({
             serializedState: result.state.toString(),
+            state: result.state,
+            context,
             conversationId,
             toolCallId: approval.toolCallId,
             toolName: approval.name,
@@ -370,11 +388,13 @@ export function streamDonnaRun({
           send(publicError(error));
         }
       } finally {
+        await completed?.catch(() => {});
         signal.removeEventListener("abort", abort);
-        controller.close();
+        if (!cancelled) controller.close();
       }
     },
     cancel() {
+      cancelled = true;
       abortController.abort();
     },
   });

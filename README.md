@@ -1,4 +1,4 @@
-# workupdate
+# pms
 
 Next.js web app with a companion Chrome extension ("Donna") in [chrome-extension/](chrome-extension/).
 

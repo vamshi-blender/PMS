@@ -61,8 +61,8 @@ function renderValue(spec: PmsValueSpec, context: ExecutionContext): unknown {
   return spec.format === "quixyDateTime" ? quixyDateTimeFormat(value) : value;
 }
 
-async function buildUserContext(): Promise<Record<string, string>> {
-  const user = await getPmsUserDetails();
+async function buildUserContext(signal?: AbortSignal): Promise<Record<string, string>> {
+  const user = await getPmsUserDetails(signal);
   if (!user.employeeCode) {
     throw new Error(
       "PMS did not report an employee code for the logged-in user.",
@@ -188,6 +188,7 @@ async function runLookupSource(
   source: PmsLookupSource,
   context: ExecutionContext,
   query?: PmsLookupQuery,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const columns = query?.columns;
   if (columns && columns.length > 0) {
@@ -202,7 +203,7 @@ async function runLookupSource(
     const filters = query?.filters?.length
       ? buildReportFilters(source, query.filters)
       : undefined;
-    const rows = await fetchReportGrid(source, { filters });
+    const rows = await fetchReportGrid(source, { filters, signal });
     return {
       rows: rows
         .slice(0, rowCap)
@@ -217,11 +218,11 @@ async function runLookupSource(
   }
 
   if (source.kind === "dataTableRow") {
-    const record = await fetchDataTableRow(source, keyValue);
+    const record = await fetchDataTableRow(source, keyValue, signal);
     return columns?.length ? projectColumns(record, columns) : record;
   }
 
-  const rows = await fetchDatasourceRows(source, keyValue);
+  const rows = await fetchDatasourceRows(source, keyValue, signal);
   return {
     rows: rows
       .slice(0, rowCap)
@@ -234,14 +235,15 @@ async function runLookupSource(
 export async function runPmsLookup(
   lookupName: string,
   query?: PmsLookupQuery,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const bundle = await getPmsBundle();
+  const bundle = await getPmsBundle(signal);
   const lookup = bundle.lookups[lookupName];
   if (!lookup || !lookup.queryable) {
     throw new Error(`"${lookupName}" is not an available PMS lookup.`);
   }
-  const context: ExecutionContext = { user: await buildUserContext() };
-  return runLookupSource(lookup.source, context, query);
+  const context: ExecutionContext = { user: await buildUserContext(signal) };
+  return runLookupSource(lookup.source, context, query, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,15 +393,16 @@ export interface PmsActionResult {
 export async function executePmsAction(
   actionName: string,
   inputs: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<PmsActionResult> {
-  const bundle: PmsBundle = await getPmsBundle();
+  const bundle: PmsBundle = await getPmsBundle(signal);
   const manifest = bundle.actions[actionName];
   if (!manifest) throw new Error(`"${actionName}" is not a known PMS action.`);
 
   validateInputs(manifest, inputs);
   applyInputRules(manifest.rules, inputs);
 
-  const user = await buildUserContext();
+  const user = await buildUserContext(signal);
   const context: ExecutionContext = { input: inputs, user };
 
   // Execution resolvers, namespaced as the manifest declares.
@@ -408,7 +411,7 @@ export async function executePmsAction(
     if (!lookup) {
       throw new Error(`PMS manifest references unknown lookup "${lookupName}".`);
     }
-    context[namespace] = await runLookupSource(lookup.source, context);
+    context[namespace] = await runLookupSource(lookup.source, context, undefined, signal);
   }
 
   const derive = buildDeriveNamespace(inputs, user);
@@ -420,6 +423,7 @@ export async function executePmsAction(
     manifest.serialAppElementId,
     manifest.appId,
     user.organizationId,
+    signal,
   );
 
   const payload: Record<string, unknown> = {};
@@ -427,7 +431,7 @@ export async function executePmsAction(
     payload[key] = renderValue(spec, context);
   }
 
-  const { appDataId } = await saveAppData(manifest.submitPath, payload);
+  const { appDataId } = await saveAppData(manifest.submitPath, payload, signal);
 
   return {
     recordId: context.serial,

@@ -1,16 +1,18 @@
 {
-  "name": "workupdate",
+  "name": "pms",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:types": "tsc --project tests/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.2.2",
-    "@openai/agents": "^0.13.4",
+    "@openai/agents": "^0.21.0",
     "next": "16.2.7",
     "openai": "^6.47.0",
     "react": "19.2.4",
@@ -22,9 +24,12 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/react-test-renderer": "^19.3.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
+    "react-test-renderer": "^19.2.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.12"
   }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  OpenAIRealtimeWebRTC,
   RealtimeAgent,
   RealtimeSession,
   type RealtimeItem,
@@ -118,8 +119,10 @@ export function useVoiceSession(
   const [muted, setMutedState] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<RealtimeSession | null>(null);
-  const connectAbortRef = useRef<AbortController | null>(null);
+  const sessionAbortRef = useRef<AbortController | null>(null);
   const connectedRef = useRef(false);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const outputAudioRef = useRef<HTMLAudioElement | null>(null);
   const cueRef = useRef<HTMLAudioElement | null>(null);
   const generationRef = useRef(0);
   const speakingRef = useRef(false);
@@ -249,11 +252,22 @@ export function useVoiceSession(
 
   const closeSession = useCallback(() => {
     generationRef.current += 1;
-    connectAbortRef.current?.abort();
-    connectAbortRef.current = null;
+    sessionAbortRef.current?.abort();
+    sessionAbortRef.current = null;
+    cueRef.current?.pause();
+    cueRef.current = null;
     stopMeter();
-    sessionRef.current?.close();
+    const session = sessionRef.current;
     sessionRef.current = null;
+    try {
+      session?.close();
+    } finally {
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      outputAudioRef.current?.pause();
+      if (outputAudioRef.current) outputAudioRef.current.srcObject = null;
+      outputAudioRef.current = null;
+    }
     connectedRef.current = false;
     speakingRef.current = false;
     activePlaybackResponseRef.current = null;
@@ -276,16 +290,29 @@ export function useVoiceSession(
     closeSession();
     const generation = generationRef.current;
     const abortController = new AbortController();
-    connectAbortRef.current = abortController;
+    sessionAbortRef.current = abortController;
+    const isCurrent = () => generation === generationRef.current && !abortController.signal.aborted;
     setStatus("preparing");
     setTurns([]);
     setError(null);
 
     try {
       const clientSecret = await createRealtimeClientSecret(abortController.signal);
-      if (generation !== generationRef.current) return;
+      if (!isCurrent()) return;
+      // The app owns this stream. The SDK deliberately leaves caller-owned
+      // tracks running on close, so closeSession always stops them explicitly.
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isCurrent()) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      mediaStreamRef.current = mediaStream;
+      const outputAudio = new Audio();
+      outputAudio.autoplay = true;
+      outputAudioRef.current = outputAudio;
 
       const finishVoiceEndIfReady = () => {
+        if (!isCurrent()) return;
         if (
           !endRequestedRef.current ||
           speakingRef.current ||
@@ -299,7 +326,9 @@ export function useVoiceSession(
           clearTimeout(endFallbackTimerRef.current);
           endFallbackTimerRef.current = null;
         }
-        queueMicrotask(() => onEndRequestedRef.current());
+        queueMicrotask(() => {
+          if (isCurrent()) onEndRequestedRef.current();
+        });
       };
 
       const agent = new RealtimeAgent({
@@ -307,7 +336,9 @@ export function useVoiceSession(
         voice: "marin",
         instructions: BASE_INSTRUCTIONS + conversationContext(messages),
         tools: createVoiceTools({
+          signal: abortController.signal,
           requestEnd: () => {
+            if (!isCurrent()) return;
             endRequestedRef.current = true;
             if (endFallbackTimerRef.current !== null) {
               clearTimeout(endFallbackTimerRef.current);
@@ -316,7 +347,7 @@ export function useVoiceSession(
             // prevents a stale SDK speaking state or missing buffer event from
             // trapping the user on the voice screen after the tool succeeds.
             endFallbackTimerRef.current = setTimeout(() => {
-              if (!endRequestedRef.current) return;
+              if (!isCurrent() || !endRequestedRef.current) return;
               endRequestedRef.current = false;
               endFallbackTimerRef.current = null;
               onEndRequestedRef.current();
@@ -326,7 +357,7 @@ export function useVoiceSession(
       });
       const session = new RealtimeSession(agent, {
         model: "gpt-realtime-2.1",
-        transport: "webrtc",
+        transport: new OpenAIRealtimeWebRTC({ mediaStream, audioElement: outputAudio }),
         config: {
           outputModalities: ["audio"],
           audio: {
@@ -346,14 +377,15 @@ export function useVoiceSession(
       sessionRef.current = session;
 
       const markSpeaking = (responseId?: string) => {
+        if (!isCurrent()) return;
         activePlaybackResponseRef.current = responseId ?? null;
         speakingRef.current = true;
         setStatus("speaking");
       };
       const markPlaybackComplete = (responseId?: string) => {
+        if (!isCurrent()) return;
         const activeResponseId = activePlaybackResponseRef.current;
         if (
-          !endRequestedRef.current &&
           responseId &&
           activeResponseId &&
           responseId !== activeResponseId
@@ -366,28 +398,35 @@ export function useVoiceSession(
         setStatus(activeToolCountRef.current > 0 ? "working" : "listening");
       };
       const markInterrupted = () => {
+        if (!isCurrent()) return;
         activePlaybackResponseRef.current = null;
         speakingRef.current = false;
-        setStatus("listening");
+        setStatus(activeToolCountRef.current > 0 ? "working" : "listening");
       };
 
-      session.on("history_updated", (history) => setTurns(historyToTurns(history)));
+      session.on("history_updated", (history) => {
+        if (isCurrent()) setTurns(historyToTurns(history));
+      });
       session.on("agent_start", () => {
+        if (!isCurrent()) return;
         if (!speakingRef.current && activeToolCountRef.current === 0) {
           setStatus("thinking");
         }
       });
       session.on("agent_end", () => {
+        if (!isCurrent()) return;
         if (!speakingRef.current && activeToolCountRef.current === 0) {
           setStatus("listening");
         }
         finishVoiceEndIfReady();
       });
       session.on("agent_tool_start", () => {
+        if (!isCurrent()) return;
         activeToolCountRef.current += 1;
         if (!speakingRef.current) setStatus("working");
       });
       session.on("agent_tool_end", () => {
+        if (!isCurrent()) return;
         activeToolCountRef.current = Math.max(0, activeToolCountRef.current - 1);
         setStatus(speakingRef.current ? "speaking" : "thinking");
         finishVoiceEndIfReady();
@@ -396,6 +435,7 @@ export function useVoiceSession(
       // Use the output buffer lifecycle: `stopped` means the buffer is fully
       // drained; `cleared` or input speech while speaking means interruption.
       session.on("transport_event", (event) => {
+        if (!isCurrent()) return;
         if (event.type === "output_audio_buffer.started") {
           markSpeaking(typeof event.response_id === "string" ? event.response_id : undefined);
           return;
@@ -408,6 +448,11 @@ export function useVoiceSession(
           return;
         }
         if (event.type === "output_audio_buffer.cleared") {
+          if (
+            typeof event.response_id === "string" &&
+            activePlaybackResponseRef.current &&
+            event.response_id !== activePlaybackResponseRef.current
+          ) return;
           markInterrupted();
           finishVoiceEndIfReady();
           return;
@@ -418,16 +463,24 @@ export function useVoiceSession(
       });
       session.on("audio_interrupted", markInterrupted);
       session.on("error", ({ error: sessionError }) => {
+        if (!isCurrent()) return;
+        closeSession();
         setError(errorMessage(sessionError));
         setStatus("error");
       });
 
+      session.transport.on("connection_change", (connectionStatus) => {
+        if (!isCurrent() || !connectedRef.current || connectionStatus !== "disconnected") return;
+        closeSession();
+        setError("The voice connection was lost. Please reconnect.");
+        setStatus("error");
+      });
+
       await session.connect({ apiKey: clientSecret });
-      if (generation !== generationRef.current) {
+      if (!isCurrent()) {
         session.close();
         return;
       }
-      connectAbortRef.current = null;
       connectedRef.current = true;
       startMeter(session);
       playSessionCue("start", () => {
@@ -447,9 +500,8 @@ export function useVoiceSession(
         });
       });
     } catch (caught) {
-      if (abortController.signal.aborted) return;
-      sessionRef.current?.close();
-      sessionRef.current = null;
+      if (!isCurrent()) return;
+      closeSession();
       setError(errorMessage(caught));
       setStatus("error");
     }

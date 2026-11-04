@@ -44,11 +44,12 @@ function readPageContext(options: PageContextArguments) {
   };
 }
 
-async function executePageContext(request: ToolApprovalRequest) {
+async function executePageContext(request: ToolApprovalRequest, signal?: AbortSignal) {
   const args = parsePageContextArguments(request.arguments);
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id) throw new Error("No active browser tab is available.");
 
+  signal?.throwIfAborted();
   const [execution] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: readPageContext,
@@ -124,15 +125,15 @@ function parseLookupQuery(args: Record<string, unknown>): PmsLookupQuery {
   return query;
 }
 
-async function executePmsLookupTool(request: ToolApprovalRequest) {
+async function executePmsLookupTool(request: ToolApprovalRequest, signal?: AbortSignal) {
   const lookup = request.arguments.lookup;
   if (typeof lookup !== "string" || !lookup) {
     throw new Error("Donna requested a PMS lookup without naming it.");
   }
-  return runPmsLookup(lookup, parseLookupQuery(request.arguments));
+  return runPmsLookup(lookup, parseLookupQuery(request.arguments), signal);
 }
 
-async function executeSubmitPmsAction(request: ToolApprovalRequest) {
+async function executeSubmitPmsAction(request: ToolApprovalRequest, signal?: AbortSignal) {
   const { actionName, fields } = request.arguments;
   if (typeof actionName !== "string" || !actionName) {
     throw new Error("Donna requested a PMS action without naming it.");
@@ -140,23 +141,26 @@ async function executeSubmitPmsAction(request: ToolApprovalRequest) {
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
     throw new Error("Donna requested a PMS action without its fields.");
   }
-  return executePmsAction(actionName, fields as Record<string, unknown>);
+  return executePmsAction(actionName, fields as Record<string, unknown>, signal);
 }
 
 const CLIENT_TOOL_HANDLERS: Record<
   string,
-  (request: ToolApprovalRequest) => Promise<unknown>
+  (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<unknown>
 > = {
   get_current_page_context: executePageContext,
   pms_lookup: executePmsLookupTool,
   submit_pms_action: executeSubmitPmsAction,
 };
 
-export async function executeClientTool(request: ToolApprovalRequest) {
+export async function executeClientTool(request: ToolApprovalRequest, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const handler =
     request.executor === "client" ? CLIENT_TOOL_HANDLERS[request.name] : undefined;
   if (!handler) {
     throw new Error("Donna requested a browser tool that is not allowed.");
   }
-  return handler(request);
+  const result = await handler(request, signal);
+  signal?.throwIfAborted();
+  return result;
 }

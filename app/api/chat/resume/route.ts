@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { RunState } from "@openai/agents";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import type { ClientToolResult } from "@/lib/agents/donna";
-import { takePendingRun } from "@/lib/agents/pending-runs";
+import { getPendingRun, takePendingRun } from "@/lib/agents/pending-runs";
 import { restoreRunState, streamDonnaRun } from "@/lib/agents/stream-run";
 
 export const runtime = "nodejs";
@@ -12,6 +13,7 @@ const resumeRequestSchema = z
     runId: z.string().uuid(),
     toolCallId: z.string().min(1).max(300),
     approved: z.boolean(),
+    claimId: z.string().uuid().optional(),
     result: z.unknown().optional(),
     error: z.string().max(1_000).optional(),
     // User-provided alternative instruction; only meaningful with approved: false.
@@ -51,8 +53,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const pending = takePendingRun(parsed.data.runId);
-  if (!pending || pending.toolCallId !== parsed.data.toolCallId) {
+  const pending = getPendingRun(parsed.data.runId, parsed.data.toolCallId);
+  if (!pending) {
     return Response.json(
       { error: "This tool request expired or was already handled." },
       { status: 410, headers: corsHeaders(origin) },
@@ -81,9 +83,29 @@ export async function POST(request: Request) {
     clientToolResults[pending.toolCallId] = clientResult;
   }
 
-  const state = await restoreRunState(pending.serializedState, {
-    clientToolResults,
-  });
+  const context = pending.context ?? { clientToolResults: {} };
+  if (
+    (pending.claimId && pending.claimId !== parsed.data.claimId) ||
+    (pending.executor === "client" && parsed.data.approved && !pending.claimId)
+  ) {
+    return Response.json(
+      { error: "This browser action must be claimed before execution, or is already being handled." },
+      { status: 409, headers: corsHeaders(origin) },
+    );
+  }
+  let state;
+  try {
+    // Keep the live SDK checkpoint whenever possible, including invocation
+    // ownership and approval evidence that cannot safely be reconstructed.
+    state = pending.state instanceof RunState
+      ? pending.state
+      : await restoreRunState(pending.serializedState, context);
+  } catch {
+    return Response.json(
+      { error: "This saved request cannot be resumed. Please start a new request." },
+      { status: 409, headers: corsHeaders(origin) },
+    );
+  }
   const interruption = state
     .getInterruptions()
     .find(
@@ -100,23 +122,29 @@ export async function POST(request: Request) {
     );
   }
 
+  request.signal.throwIfAborted();
+  if (!takePendingRun(parsed.data.runId, pending)) {
+    return Response.json(
+      { error: "This tool request expired or was already handled." },
+      { status: 410, headers: corsHeaders(origin) },
+    );
+  }
+  Object.assign(context.clientToolResults, clientToolResults);
+
   if (parsed.data.approved) {
     state.approve(interruption);
   } else {
-    // The rejection message is delivered to the model as the tool call's
-    // output, so an alternative instruction rides along in the same resumed
-    // run — no extra model turn needed.
     state.reject(interruption, {
-      message: parsed.data.instruction
-        ? `The user declined this tool call and instead asked: "${parsed.data.instruction}". Follow the user's instruction.`
-        : parsed.data.error ?? "The user declined this request.",
+      message: parsed.data.error ?? "The user declined this request.",
     });
+    if (parsed.data.instruction) state.addInput(parsed.data.instruction);
   }
 
   const stream = streamDonnaRun({
     input: state,
     conversationId: pending.conversationId,
     signal: request.signal,
+    context,
   });
 
   return new Response(stream, {

@@ -29,10 +29,11 @@ async function readCachedBundle(): Promise<PmsBundle | null> {
  * Fresh-first: fetch from the backend and refresh the cache; fall back to
  * the cached copy only when the fetch fails (backend down, offline).
  */
-export async function getPmsBundle(): Promise<PmsBundle> {
+export async function getPmsBundle(signal?: AbortSignal): Promise<PmsBundle> {
+  signal?.throwIfAborted();
   const backendUrl = await getBackendUrl();
   try {
-    const response = await fetch(`${backendUrl}/api/pms/manifests`);
+    const response = await fetch(`${backendUrl}/api/pms/manifests`, { signal });
     if (!response.ok) throw new Error(`Bundle fetch failed (${response.status}).`);
     const bundle: unknown = await response.json();
     if (!isUsableBundle(bundle)) {
@@ -41,6 +42,7 @@ export async function getPmsBundle(): Promise<PmsBundle> {
     await chrome.storage.local.set({ [BUNDLE_CACHE_KEY]: bundle });
     return bundle;
   } catch (error) {
+    signal?.throwIfAborted();
     const cached = await readCachedBundle();
     if (cached) return cached;
     throw error instanceof Error

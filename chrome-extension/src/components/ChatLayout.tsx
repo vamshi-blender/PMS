@@ -17,6 +17,7 @@ import MessageList, {
   type ToolWorkItem,
 } from "./MessageList";
 import {
+  claimToolExecution,
   deleteConversation,
   generateConversationTitle,
   resumeChat,
@@ -498,19 +499,49 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     autoToolRef.current = null;
 
     try {
-      await request(controller.signal, (event) =>
-        handleStreamEvent(chatId, messageId, event),
-      );
+      const onEvent = (event: ChatStreamEvent) => {
+        if (activeRequestRef.current === controller && !controller.signal.aborted) {
+          handleStreamEvent(chatId, messageId, event);
+        }
+      };
+      await request(controller.signal, onEvent);
+      controller.signal.throwIfAborted();
 
-      // A silent tool paused this run: execute it in the extension and
-      // resume immediately — the user never sees an approval card.
-      const autoRequest = autoToolRef.current;
-      if (autoRequest && !controller.signal.aborted) {
+      // One controller owns the whole chain, including browser work between
+      // streams. Stop must never start a fresh, uncancelled resume request.
+      while (true) {
+        // Stream callbacks populate this ref asynchronously.
+        const toolRequest = autoToolRef.current as ToolApprovalRequest | null;
+        if (!toolRequest) break;
         autoToolRef.current = null;
-        await runAutoTool(chatId, messageId, autoRequest);
+        updateAssistant(chatId, messageId, (current) => resumeWorkClock(current));
+        const claimId = await claimToolExecution(toolRequest, controller.signal);
+        let result: unknown;
+        let error: string | undefined;
+        try {
+          result = await executeClientTool(toolRequest, controller.signal);
+        } catch (toolError) {
+          controller.signal.throwIfAborted();
+          error = toolError instanceof Error ? toolError.message : "The PMS call failed.";
+          updateAssistant(chatId, messageId, (current) =>
+            setToolStatus(current, toolRequest.toolCallId, "failed", Date.now()),
+          );
+        }
+        controller.signal.throwIfAborted();
+        await resumeChat({
+          runId: toolRequest.runId,
+          toolCallId: toolRequest.toolCallId,
+          approved: error === undefined,
+          claimId,
+          result,
+          error,
+          signal: controller.signal,
+          onEvent,
+        });
+        controller.signal.throwIfAborted();
       }
     } catch (error) {
-      const cancelled = error instanceof DOMException && error.name === "AbortError";
+      const cancelled = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
       updateAssistant(chatId, messageId, (message) => {
         const stoppedAt = Date.now();
         return {
@@ -541,44 +572,12 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         };
       });
     } finally {
-      if (activeRequestRef.current === controller) activeRequestRef.current = null;
-      setBusyState(false);
+      if (activeRequestRef.current === controller) {
+        activeRequestRef.current = null;
+        autoToolRef.current = null;
+        setBusyState(false);
+      }
     }
-  }
-
-  async function runAutoTool(
-    chatId: string,
-    messageId: string,
-    toolRequest: ToolApprovalRequest,
-  ) {
-    updateAssistant(chatId, messageId, (current) => resumeWorkClock(current));
-
-    let approved = true;
-    let result: unknown;
-    let error: string | undefined;
-    try {
-      result = await executeClientTool(toolRequest);
-    } catch (toolError) {
-      approved = false;
-      error =
-        toolError instanceof Error ? toolError.message : "The PMS call failed.";
-      updateAssistant(chatId, messageId, (current) => ({
-        ...setToolStatus(current, toolRequest.toolCallId, "failed", Date.now()),
-        status: "pending",
-      }));
-    }
-
-    await executeRequest(chatId, messageId, (signal, onEvent) =>
-      resumeChat({
-        runId: toolRequest.runId,
-        toolCallId: toolRequest.toolCallId,
-        approved,
-        result,
-        error,
-        signal,
-        onEvent,
-      }),
-    );
   }
 
   function handleSend(content: string) {
@@ -745,43 +744,37 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       toolRequest: undefined,
     }));
 
-    let result: unknown;
-    let error: string | undefined;
-    if (approved) {
-      // Server-executed tools run inside the backend once approved; only
-      // client tools produce a result in the browser.
-      if (toolRequest.executor === "client") {
+    await executeRequest(chatId, messageId, async (signal, onEvent) => {
+      let result: unknown;
+      let error: string | undefined;
+      let claimId: string | undefined;
+      if (approved && toolRequest.executor === "client") {
+        claimId = await claimToolExecution(toolRequest, signal);
         try {
-          result = await executeClientTool(toolRequest);
+          result = await executeClientTool(toolRequest, signal);
         } catch (toolError) {
+          signal.throwIfAborted();
           approved = false;
-          error = toolError instanceof Error ? toolError.message : "The page could not be read.";
-          updateAssistant(chatId, messageId, (current) => ({
-            ...setToolStatus(
-              current,
-              toolRequest.toolCallId,
-              "failed",
-              Date.now(),
-            ),
-            status: "pending",
-          }));
+          error = toolError instanceof Error ? toolError.message : "The tool could not complete.";
+          updateAssistant(chatId, messageId, (current) =>
+            setToolStatus(current, toolRequest.toolCallId, "failed", Date.now()),
+          );
         }
+      } else if (!approved) {
+        error = "The user declined this request.";
       }
-    } else {
-      error = "The user declined this request.";
-    }
-
-    void executeRequest(chatId, messageId, (signal, onEvent) =>
-      resumeChat({
+      signal.throwIfAborted();
+      await resumeChat({
         runId: toolRequest.runId,
         toolCallId: toolRequest.toolCallId,
         approved,
+        claimId,
         result,
         error,
         signal,
         onEvent,
-      }),
-    );
+      });
+    });
   }
 
   function handleToolInstruction(messageId: string, instruction: string) {

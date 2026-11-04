@@ -39,31 +39,37 @@ async function streamRequest({
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const event: unknown = JSON.parse(line);
-      if (!isChatStreamEvent(event)) {
-        throw new Error("The backend sent an unknown stream event.");
-      }
-      onEvent(event);
-    }
-
-    if (done) break;
-  }
-
-  if (buffer.trim()) {
-    const event: unknown = JSON.parse(buffer);
+  let terminal = false;
+  const emit = (line: string) => {
+    if (!line.trim()) return;
+    signal.throwIfAborted();
+    const event: unknown = JSON.parse(line);
     if (!isChatStreamEvent(event)) {
       throw new Error("The backend sent an unknown stream event.");
     }
+    terminal ||= event.type === "response.completed" ||
+      event.type === "response.paused" || event.type === "response.error";
     onEvent(event);
+  };
+
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) emit(line);
+      if (done) break;
+    }
+    emit(buffer);
+    signal.throwIfAborted();
+    if (!terminal) {
+      throw new Error("The response connection ended before Donna finished. Please try again.");
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 
@@ -90,6 +96,7 @@ export function resumeChat(options: {
   runId: string;
   toolCallId: string;
   approved: boolean;
+  claimId?: string;
   result?: unknown;
   error?: string;
   instruction?: string;
@@ -102,6 +109,7 @@ export function resumeChat(options: {
       runId: options.runId,
       toolCallId: options.toolCallId,
       approved: options.approved,
+      ...(options.claimId ? { claimId: options.claimId } : {}),
       ...(options.result === undefined ? {} : { result: options.result }),
       ...(options.error ? { error: options.error } : {}),
       ...(options.instruction ? { instruction: options.instruction } : {}),
@@ -109,6 +117,23 @@ export function resumeChat(options: {
     signal: options.signal,
     onEvent: options.onEvent,
   });
+}
+
+export async function claimToolExecution(request: { runId: string; toolCallId: string }, signal: AbortSignal): Promise<string> {
+  const backendUrl = await getBackendUrl();
+  signal.throwIfAborted();
+  const response = await fetch(`${backendUrl}/api/chat/claim`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ runId: request.runId, toolCallId: request.toolCallId }),
+    signal,
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body: unknown = await response.json();
+  if (!body || typeof body !== "object" || !("claimId" in body) || typeof body.claimId !== "string") {
+    throw new Error("The backend returned an invalid approval claim.");
+  }
+  return body.claimId;
 }
 
 export async function generateConversationTitle(message: string): Promise<string> {
