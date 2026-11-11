@@ -5,10 +5,11 @@ const VIEW_ID = "05072022-184836479-5888ab5b-d645-4e86-a937-f2d02d2414c1";
 const ISSUE_COLUMNS = ["Issue Id", "Project Id", "Record Id", "Issue Type", "Assignee", "Summary", "Status"];
 export const worklogLookups: Record<string, PmsLookupDefinition> = {
   getMyWorklogs: {
-    description: "Your worklogs across ALL issues for an India calendar date. Pass logDate as YYYY-MM-DD. Returns totalHours and entryCount computed over every returned entry, plus a capped detail list. Uses the logged-in user's email automatically.",
+    description: "Your worklogs across ALL issues for logDate OR inclusive fromDate/toDate (YYYY-MM-DD in India, at most 366 days). Fetch a whole range once; returns totalHours, complete daily/weekly summaries and datesWithoutEntries, plus capped details. excludeWeekends=true omits Saturdays/Sundays. Uses and validates the logged-in user's email. Missing entries mean no logged work, not proof no work occurred.",
     queryable: true,
     source: {
       kind: "dailyWorklogs",
+      rangeReportId: "05072022-184853620-cf972961-d811-4ae5-9704-faddf3cb9b42",
       dataTableId: "03012021-224715242-24c88b8e-8228-4231-aa14-003334728058",
       functionId: "09032021-003147819-f26197aa-fb37-4bf4-b8a8-82f6eff7f631",
       referencedElements: ["Worklog Date", "Worklog Description", "Worklog Hours", "Worklog Id", "Worklog Date Grid"],

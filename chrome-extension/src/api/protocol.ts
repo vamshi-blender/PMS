@@ -1,3 +1,5 @@
+import type { PmsScope } from "../../../shared/pms-scope";
+
 export type ClientToolName =
   | "get_current_page_context"
   | "pms_lookup"
@@ -17,6 +19,9 @@ export interface ToolApprovalRequest {
   description: string;
   confirmLabel: string;
   requiresApproval: true;
+  scope?: PmsScope;
+  conversationId?: string;
+  argumentsHash?: string;
 }
 
 export type ChatStreamEvent =

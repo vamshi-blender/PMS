@@ -2,7 +2,7 @@ import type { PmsLookupDefinition } from "../types";
 
 export const attendanceLookups: Record<string, PmsLookupDefinition> = {
   getMyAttendance: {
-    description: "Your attendance for one date. Pass date as YYYY-MM-DD in India. Returns In Time (attendance login), Out Time, Total Hours and Status. Uses your signed-in employee access. No rows means no record returned, not proof of absence. Missing Out Time or Total Hours must not be invented.",
+    description: "Your attendance for date OR an inclusive fromDate/toDate range (YYYY-MM-DD in India, at most 366 days). Fetch the whole range once; returns complete daily/weekly summaries plus capped detail rows. excludeWeekends=true omits Saturdays/Sundays. Hours are decimal in summaries and HH:mm in details. Missing records/hours are unknown, not absence or zero hours. Attendance does not prove physical office presence. Uses your signed-in employee access.",
     queryable: true,
     source: {
       kind: "attendanceReport",

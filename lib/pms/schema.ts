@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { getPmsBundle } from "./bundle";
 import type { PmsInputSlot, PmsLookupSource } from "./types";
+import type { PmsEnvironment } from "../../shared/pms-scope";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -51,9 +52,10 @@ export function actionFieldsShape(
 }
 
 /** Functional catalog for list_pms_capabilities — what Donna can do in PMS. */
-export function capabilitiesCatalog(): unknown {
-  const bundle = getPmsBundle();
+export function capabilitiesCatalog(environment: PmsEnvironment = "staging"): unknown {
+  const bundle = getPmsBundle(environment);
   return {
+    environment,
     actions: Object.entries(bundle.actions).map(([actionName, manifest]) => ({
       actionName,
       title: manifest.title,
@@ -74,7 +76,12 @@ export function capabilitiesCatalog(): unknown {
     lookups: Object.entries(bundle.lookups)
       .filter(([, lookup]) => lookup.queryable)
       .map(([name, lookup]) => ({
-        parameters: lookup.source.kind === "issueContext" || lookup.source.kind === "worklogReport" || lookup.source.kind === "issueTransitions" ? { issueId: "Required: full issue ID or unique numeric suffix" } : lookup.source.kind === "dailyWorklogs" ? { logDate: "Required: YYYY-MM-DD in India; resolve relative dates using the hidden donna_context timestamp" } : lookup.source.kind === "attendanceReport" ? { date: "Required: YYYY-MM-DD in India" } : {},
+        parameters: lookup.source.kind === "issueContext" || lookup.source.kind === "worklogReport" || lookup.source.kind === "issueTransitions"
+          ? { issueId: "Required: full issue ID or unique numeric suffix" }
+          : lookup.source.kind === "dailyWorklogs" || lookup.source.kind === "attendanceReport"
+            ? { [lookup.source.kind === "dailyWorklogs" ? "logDate" : "date"]: "YYYY-MM-DD in India for one day; omit when supplying a range",
+              fromDate: "Inclusive YYYY-MM-DD range start; supply toDate too, at most 366 days",
+              toDate: "Inclusive YYYY-MM-DD range end", excludeWeekends: "true to omit Saturdays and Sundays from details and summaries" } : {},
         resolverName: name,
         description: lookup.description,
         ...lookupQueryCapabilities(lookup.source),

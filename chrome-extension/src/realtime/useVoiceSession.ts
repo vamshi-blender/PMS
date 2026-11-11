@@ -11,8 +11,11 @@ import type { ChatMessage } from "../components/MessageList";
 import type { VoiceStatus } from "../components/VoiceScreen";
 import type { VoiceTranscriptTurn } from "../components/VoiceTranscript";
 import { createVoiceTools } from "./voiceTools";
+import { assertPmsScope, capturePmsScope } from "../api/pmsAuth";
+import type { PmsScope } from "../../../shared/pms-scope";
 
 const BASE_INSTRUCTIONS = `You are Donna, a thoughtful personal AI assistant in a Chrome extension.
+For attendance or worklog date ranges, use one lookup per data source with fromDate/toDate, not daily calls. Use the returned full daily/weekly summaries, even when detail rows are truncated. Exclude weekends only when requested; missing attendance is unknown, and no worklog entry means nothing was logged.
 
 This is a spoken conversation. Respond naturally, warmly, and concisely. Prefer one or two short spoken paragraphs unless the user asks for detail. Never read raw JSON, internal identifiers, or tool arguments aloud.
 
@@ -287,7 +290,7 @@ export function useVoiceSession(
     if (wasConnected) playSessionCue("end");
   }, [closeSession, playSessionCue]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (expectedScope?: PmsScope) => {
     closeSession();
     const generation = generationRef.current;
     const abortController = new AbortController();
@@ -298,6 +301,8 @@ export function useVoiceSession(
     setError(null);
 
     try {
+      const scope = expectedScope ?? await capturePmsScope(abortController.signal);
+      await assertPmsScope(scope, abortController.signal);
       const clientSecret = await createRealtimeClientSecret(abortController.signal);
       if (!isCurrent()) return;
       // The app owns this stream. The SDK deliberately leaves caller-owned
@@ -332,12 +337,14 @@ export function useVoiceSession(
         });
       };
 
-      const voiceInstructions = () => BASE_INSTRUCTIONS + conversationContext(messages) + "\n\n" + currentPromptContext();
+      const voiceInstructions = () => BASE_INSTRUCTIONS + conversationContext(messages) +
+        `\nPMS environment for this voice session: ${scope.environment}. All lookups use this environment only.\n` + currentPromptContext();
       const agent = new RealtimeAgent({
         name: "Donna",
         voice: "marin",
         instructions: voiceInstructions(),
         tools: createVoiceTools({
+          scope,
           signal: abortController.signal,
           requestEnd: () => {
             if (!isCurrent()) return;

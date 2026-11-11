@@ -12,6 +12,7 @@ import {
 } from "../pms/schema";
 import { CONFIRM_LABELS } from "./protocol";
 import { PROMPT_CONTEXT_INSTRUCTIONS } from "../../shared/prompt-context";
+import type { PmsScope } from "../../shared/pms-scope";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -21,6 +22,7 @@ export interface ClientToolResult {
 
 export interface DonnaRunContext {
   clientToolResults: Record<string, ClientToolResult>;
+  scope?: PmsScope;
 }
 
 // Every tool that needsApproval must include these fields in its parameters.
@@ -147,6 +149,9 @@ const pmsLookupParameters = z
       .describe("Which PMS lookup to run."),
     newStatus: z.string().nullable().describe("For getAllowedIssueStatuses: desired next status to inspect its requirements, or null to list transitions."),
     details: transitionDetailsSchema(STATUS_DETAIL_FIELDS).nullable().describe("For getAllowedIssueStatuses: supplied transition details for conditional requirements, null otherwise."),
+    fromDate: z.string().nullable().describe("For getMyAttendance/getMyWorklogs: inclusive range start YYYY-MM-DD in India. Supply toDate too; set date/logDate to null. Use one range lookup per data source, not one per day. null for other lookups."),
+    toDate: z.string().nullable().describe("Inclusive range end YYYY-MM-DD for getMyAttendance/getMyWorklogs; at most 366 days. null for single-day or other lookups."),
+    excludeWeekends: z.boolean().nullable().describe("For attendance/worklog dates only: true to exclude Saturdays/Sundays from details and daily/weekly summaries when the user says weekends are off; false/null otherwise."),
     date: z.string().nullable().describe("Required for getMyAttendance: YYYY-MM-DD in India; use the hidden donna_context timestamp for today/yesterday. null for other lookups."),
     logDate: z.string().nullable().describe("Required for getMyWorklogs: YYYY-MM-DD in India. Resolve today/yesterday using the hidden donna_context timestamp. null for other lookups."),
     issueId: z.string().nullable().describe("Required for getIssueContext and getIssueWorklogs: the issue ID exactly as supplied by the user, including any prefix. A number alone is allowed for unique resolution. null for other lookups."),
@@ -223,8 +228,8 @@ const listPmsCapabilities = tool({
   description:
     "List the PMS actions and data lookups Donna currently supports, with their fields and business rules. Use when the user asks what you can do in PMS, or before collecting fields for an action.",
   parameters: z.object({}).strict(),
-  async execute() {
-    return JSON.stringify(capabilitiesCatalog());
+  async execute(_input, context) {
+    return JSON.stringify(capabilitiesCatalog((context?.context as DonnaRunContext | undefined)?.scope?.environment));
   },
 });
 
@@ -240,6 +245,8 @@ ${PROMPT_CONTEXT_INSTRUCTIONS}
 Use get_current_page_context only when the user's request depends on the active browser page. Explain why page access is needed before requesting it when that is not obvious.
 
 PMS (the user's Quixy project-management system):
+For date-range, weekly, or daily-completeness questions, use fromDate/toDate with getMyAttendance and/or getMyWorklogs once each for the whole range. Set date/logDate to null and excludeWeekends=true when Saturdays/Sundays are off. The tool paginates internally and computes full daily/weekly summaries before capping detail rows. Use weekly.knownHours with datesWithoutEntries/datesWithUnknownHours; never calculate full-range totals from a truncated detail list. Missing attendance records are unknown, not zero hours or proof of absence. No worklog entry means nothing was logged for that date, not proof no work happened. Attendance hours do not prove physical office presence when WFH is possible. Preserve the requested range and do not silently restrict it to a year or month.
+The server's donna_pms_environment tag identifies the environment for this entire run. All PMS results and actions belong to that environment. Never mix staging and production data or claim an action happened in another environment. Switching environments requires using the extension's environment selector.
 Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates using the hidden donna_context timestamp.
 When a lookup can return many rows, pass filters (by status, leave type, dates, or application id) and columns so only the data the question needs is fetched — check list_pms_capabilities for each lookup's filterable fields, valid values, and column names.
 For changing issue status: use pms_lookup with getAllowedIssueStatuses and the user's exact issueId. Call it with newStatus and supplied details to discover visible fields, required fields, options and validationErrors. Collect only necessary or explicitly requested details; never invent lead confirmation, branches, RCA or file uploads. If requiresPmsForm is nonempty, direct the user to PMS. Do not call submit_pms_action until validationErrors are empty. Use canonical issueId, exact summary, currentStatus and newStatus from this lookup; preserve the user's explicit prefix. The extension rechecks fresh form rules and transitions after approval. Never bypass intermediate statuses or automatically retry uncertain writes. Confirm success with issue ID and new status, without internal IDs.

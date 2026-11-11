@@ -10,6 +10,7 @@ import {
 import { donnaAgent, type DonnaRunContext } from "./donna";
 import { withPromptContext } from "../../shared/prompt-context";
 import { savePendingRun } from "./pending-runs";
+import { toolArgumentsHash } from "../../shared/pms-scope";
 import {
   CONFIRM_LABELS,
   encodeEvent,
@@ -234,7 +235,8 @@ export function streamDonnaRun({
       try {
         abortController.signal.throwIfAborted();
         const isResumedRun = input instanceof RunState;
-        const result = await run(donnaAgent, typeof input === "string" ? withPromptContext(input) : input, {
+        const result = await run(donnaAgent, typeof input === "string"
+          ? `${context.scope ? `<donna_pms_environment>${context.scope.environment}</donna_pms_environment>\n` : ""}${withPromptContext(input)}` : input, {
           stream: true,
           signal: abortController.signal,
           maxTurns: 8,
@@ -356,6 +358,7 @@ export function streamDonnaRun({
           .find((candidate) => candidate !== null);
 
         if (approval) {
+          const argumentsHash = await toolArgumentsHash(approval.name, approval.arguments);
           const runId = savePendingRun({
             serializedState: result.state.toString(),
             state: result.state,
@@ -364,6 +367,7 @@ export function streamDonnaRun({
             toolCallId: approval.toolCallId,
             toolName: approval.name,
             executor: approval.executor,
+            argumentsHash,
           });
 
           send({
@@ -374,6 +378,10 @@ export function streamDonnaRun({
             executor: approval.executor,
             arguments: approval.arguments,
             ...approvalPresentation(approval.arguments),
+            ...(context.scope ? {
+              scope: context.scope, conversationId, argumentsHash,
+              description: `${context.scope.environment === "production" ? "Production" : "Staging"} PMS\n${approvalPresentation(approval.arguments).description}`,
+            } : {}),
             requiresApproval: true,
           });
           send({ type: "response.paused", runId, pausedAt: Date.now() });

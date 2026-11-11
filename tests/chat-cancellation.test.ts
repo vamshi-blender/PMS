@@ -12,7 +12,7 @@ vi.mock("../chrome-extension/src/api/chat", () => ({
   generateConversationTitle: async () => "Test", deleteConversation: vi.fn(),
 }));
 vi.mock("../chrome-extension/src/api/clientTools", () => ({ executeClientTool: api.execute }));
-vi.mock("../chrome-extension/src/api/pmsAuth", () => ({ getPmsUserDetails: async () => ({ firstName: "Test" }) }));
+vi.mock("../chrome-extension/src/api/pmsAuth", () => ({ getPmsUserDetails: async () => ({ firstName: "Test" }), capturePmsScope: async () => ({ environment: "staging", userId: "user", organizationId: "org", sessionId: "00000000-0000-4000-8000-000000000001" }) }));
 vi.mock("../chrome-extension/src/api/chatStorage", async (original) => ({
   ...await original<object>(),
   loadChatStore: async () => ({ activeChatId: null, chats: [] }),
@@ -41,7 +41,7 @@ beforeEach(async () => {
     });
   });
   api.stream.mockReset();
-  await act(async () => { renderer = create(createElement(ChatLayout, { ctx: "sidepanel" })); });
+  await act(async () => { renderer = create(createElement(ChatLayout, { ctx: "sidepanel", environment: "staging", onEnvironmentChange: vi.fn() })); });
 });
 afterEach(async () => {
   await act(async () => renderer.unmount());

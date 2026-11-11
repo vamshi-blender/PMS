@@ -25,7 +25,9 @@ import {
 } from "../api/chat";
 import { createChatSearcher } from "../api/chatSearch";
 import { executeClientTool } from "../api/clientTools";
-import { getPmsUserDetails } from "../api/pmsAuth";
+import { capturePmsScope, getPmsUserDetails } from "../api/pmsAuth";
+import type { PmsScope } from "../../../shared/pms-scope";
+import { PMS_ENVIRONMENTS, type PmsEnvironment } from "../api/pmsEnvironment";
 import type { ToolApprovalRequest } from "../api/protocol";
 import type { ChatStreamEvent } from "../api/protocol";
 import { useVoiceSession } from "../realtime/useVoiceSession";
@@ -86,9 +88,11 @@ function resumeWorkClock(message: ChatMessage, resumedAt = Date.now()): ChatMess
 
 interface ChatLayoutProps {
   ctx: DisplayMode;
+  environment: PmsEnvironment;
+  onEnvironmentChange: (environment: PmsEnvironment) => void;
 }
 
-export default function ChatLayout({ ctx }: ChatLayoutProps) {
+export default function ChatLayout({ ctx, environment, onEnvironmentChange }: ChatLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode | null>(null);
   const [modeHint, setModeHint] = useState("");
@@ -108,6 +112,9 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const autoToolRef = useRef<ToolApprovalRequest | null>(null);
   const busyRef = useRef(false);
   const modeSwitchingRef = useRef(false);
+  const persistedStoreRef = useRef<StoredChatStore | null>(null);
+  const ownerRef = useRef<PmsScope | undefined>(undefined);
+  if (hydrated) persistedStoreRef.current = chatStore;
 
   const activeChat =
     chatStore.chats.find((chat) => chat.id === chatStore.activeChatId) ?? null;
@@ -133,34 +140,55 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   );
 
   useEffect(() => {
-    loadChatStore()
-      .then(setChatStore)
-      .finally(() => setHydrated(true));
+    let cancelled = false;
+    void capturePmsScope().then(scope => {
+      if (cancelled || scope.environment !== environment) return undefined;
+      ownerRef.current = scope;
+      return loadChatStore(environment, scope);
+    }).then(store => {
+      if (!store) return;
+      if (!cancelled) { setChatStore(store); setHydrated(true); }
+    }).catch(() => {});
 
-    return () => activeRequestRef.current?.abort();
-  }, []);
+    return () => {
+      cancelled = true;
+      activeRequestRef.current?.abort();
+      // Flush the debounce when switching, logging out, or closing the UI.
+      if (persistedStoreRef.current) void saveChatStore(persistedStoreRef.current, environment, ownerRef.current);
+    };
+  }, [environment]);
 
   // ChatLayout only mounts with a live PMS session (App.tsx gates it), so
   // this normally resolves; on failure the UI just stays nameless.
   useEffect(() => {
     let cancelled = false;
-    getPmsUserDetails()
+    const controller = new AbortController();
+    getPmsUserDetails(controller.signal, environment)
       .then((user) => {
         if (!cancelled) setUserName(user.firstName);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, []);
+  }, [environment]);
 
   useEffect(() => {
     if (!hydrated) return;
     const timeout = setTimeout(() => {
-      void saveChatStore(chatStore);
+      void saveChatStore(chatStore, environment, ownerRef.current);
     }, 150);
     return () => clearTimeout(timeout);
-  }, [chatStore, hydrated]);
+  }, [chatStore, hydrated, environment]);
+
+  useEffect(() => {
+    const flush = () => {
+      if (persistedStoreRef.current) void saveChatStore(persistedStoreRef.current, environment, ownerRef.current);
+    };
+    window.addEventListener("pagehide", flush);
+    return () => window.removeEventListener("pagehide", flush);
+  }, [environment]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -529,6 +557,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         }
         controller.signal.throwIfAborted();
         await resumeChat({
+          request: toolRequest,
           runId: toolRequest.runId,
           toolCallId: toolRequest.toolCallId,
           approved: error === undefined,
@@ -637,6 +666,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
     void executeRequest(chatId, replyId, (signal, onEvent) =>
       streamChat({
+        environment,
+        scope: ownerRef.current,
         message: content,
         conversationId: requestConversationId,
         signal,
@@ -652,7 +683,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   function handleOpenVoice() {
     setVoiceClosing(false);
     setVoiceOpen(true);
-    void voiceSession.start();
+    void voiceSession.start(ownerRef.current);
   }
 
   function handleCloseVoice() {
@@ -707,7 +738,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
     try {
       if (chat.conversationId) {
-        await deleteConversation(chat.conversationId);
+        await deleteConversation(chat.conversationId, ownerRef.current);
       }
     } catch (error) {
       console.error("Could not delete Donna conversation", error);
@@ -765,6 +796,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       }
       signal.throwIfAborted();
       await resumeChat({
+        request: toolRequest,
         runId: toolRequest.runId,
         toolCallId: toolRequest.toolCallId,
         approved,
@@ -834,6 +866,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
     void executeRequest(chatId, replyId, (signal, onEvent) =>
       resumeChat({
+        request: toolRequest,
         runId: toolRequest.runId,
         toolCallId: toolRequest.toolCallId,
         approved: false,
@@ -864,6 +897,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     }));
     void executeRequest(chatId, messageId, (signal, onEvent) =>
       streamChat({
+        environment,
+        scope: ownerRef.current,
         message: previousUser.content,
         conversationId: conversationId ?? undefined,
         signal,
@@ -890,7 +925,11 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
             >
               <HugeiconsIcon icon={MenuTwoLineIcon} size={20} />
             </button>
-            <span className="chat-brand-name">Donna</span>
+            <span className="chat-brand-labels">
+              <span className="chat-brand-name">Donna</span>
+              <span className="chat-environment-separator" aria-hidden="true">•</span>
+              <span className="chat-environment">{PMS_ENVIRONMENTS[environment].label}</span>
+            </span>
           </div>
           <div className="chat-topbar-actions">
             <button
@@ -988,6 +1027,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       <Sidebar
         open={sidebarOpen}
         userName={userName}
+        environment={environment}
+        onEnvironmentChange={onEnvironmentChange}
         chats={sidebarChats}
         activeChatId={chatStore.activeChatId}
         busy={busy}

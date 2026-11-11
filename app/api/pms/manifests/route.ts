@@ -19,7 +19,11 @@ export function GET(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
-  return Response.json(getPmsBundle(), {
+  const environment = new URL(request.url).searchParams.get("environment");
+  if (environment !== "staging" && environment !== "production") {
+    return Response.json({ error: "A PMS environment is required." }, { status: 400, headers: corsHeaders(origin) });
+  }
+  return Response.json(getPmsBundle(environment), {
     headers: {
       ...corsHeaders(origin),
       "Cache-Control": "no-cache",

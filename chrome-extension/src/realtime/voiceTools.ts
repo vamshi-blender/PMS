@@ -1,6 +1,7 @@
 import { tool } from "@openai/agents/realtime";
 import { z } from "zod";
 import { executeClientTool } from "../api/clientTools";
+import type { PmsScope } from "../../../shared/pms-scope";
 
 // Hardcoded to match the manifest bundle (same convention as the lookup
 // names below): an enum stops the model from guessing near-miss names.
@@ -83,6 +84,9 @@ const pmsLookupParameters = z
     ]),
     newStatus: z.string().nullable().describe("Desired status for getAllowedIssueStatuses, null to list transitions or for other lookups."),
     details: z.array(z.object({ field: z.string(), value: z.string().nullable(), values: z.array(z.string()).nullable() }).strict()).nullable(),
+    fromDate: z.string().nullable().describe("For getMyAttendance/getMyWorklogs: inclusive India date-range start YYYY-MM-DD. Set date/logDate null and supply toDate. Use one lookup for the whole range."),
+    toDate: z.string().nullable().describe("Inclusive India date-range end YYYY-MM-DD, at most 366 days; null for a single day or other lookups."),
+    excludeWeekends: z.boolean().nullable().describe("For attendance/worklogs: true excludes Saturdays/Sundays from summaries when weekends are off; null otherwise."),
     date: z.string().nullable().describe("Required for getMyAttendance: India YYYY-MM-DD from hidden context. null otherwise."),
     logDate: z.string().nullable().describe("Required for getMyWorklogs: India YYYY-MM-DD; resolve relative dates using the hidden donna_context timestamp. null otherwise."),
     issueId: z.string().nullable().describe("Required for getIssueContext, getIssueWorklogs and getAllowedIssueStatuses; preserve the exact user-supplied prefix. null for other lookups."),
@@ -109,11 +113,12 @@ const pmsLookupParameters = z
   .strict();
 
 interface VoiceToolOptions {
+  scope: PmsScope;
   requestEnd: () => void;
   signal: AbortSignal;
 }
 
-export function createVoiceTools({ requestEnd, signal }: VoiceToolOptions) {
+export function createVoiceTools({ requestEnd, signal, scope }: VoiceToolOptions) {
   return [
     tool({
       name: "pms_lookup",
@@ -125,6 +130,7 @@ export function createVoiceTools({ requestEnd, signal }: VoiceToolOptions) {
         const callId = details?.toolCall?.callId ?? crypto.randomUUID();
         const result = await executeClientTool({
           runId: "realtime",
+          scope,
           toolCallId: callId,
           name: "pms_lookup",
           executor: "client",

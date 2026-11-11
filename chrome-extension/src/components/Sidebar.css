@@ -468,6 +468,20 @@
   color: var(--text-primary);
   cursor: pointer;
   text-align: left;
+  width: 100%;
+}
+
+.sidebar-profile {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-environment-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
 }
 
 .sidebar-user-row:hover {

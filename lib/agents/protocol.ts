@@ -1,3 +1,5 @@
+import type { PmsScope } from "../../shared/pms-scope";
+
 export type ClientToolName =
   | "get_current_page_context"
   | "pms_lookup"
@@ -56,6 +58,9 @@ export type ChatStreamEvent =
       description: string;
       confirmLabel: ConfirmLabel;
       requiresApproval: true;
+      scope?: PmsScope;
+      conversationId?: string;
+      argumentsHash?: string;
     }
   | {
       type: "response.paused";

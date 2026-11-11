@@ -17,10 +17,10 @@ import {
 import { applyTheme, getSavedTheme, type Theme } from "../theme";
 import { getBackendUrl, saveBackendUrl } from "../api/backend";
 import "./Sidebar.css";
+import { PMS_ENVIRONMENTS, type PmsEnvironment } from "../api/pmsEnvironment";
+import EnvironmentOptions from "./EnvironmentOptions";
 
 const TRANSITION_MS = 220;
-
-const CURRENT_USER_PLAN = "Free";
 
 export interface SidebarChat {
   id: string;
@@ -33,6 +33,8 @@ interface SidebarProps {
   open: boolean;
   // Real name from the PMS session; empty while it loads.
   userName: string;
+  environment: PmsEnvironment;
+  onEnvironmentChange: (environment: PmsEnvironment) => void;
   chats: SidebarChat[];
   activeChatId: string | null;
   busy: boolean;
@@ -48,6 +50,8 @@ interface SidebarProps {
 export default function Sidebar({
   open,
   userName,
+  environment,
+  onEnvironmentChange,
   chats,
   activeChatId,
   busy,
@@ -60,6 +64,8 @@ export default function Sidebar({
   onDeleteChat,
 }: SidebarProps) {
   const [mounted, setMounted] = useState(open);
+  const [environmentMenuOpen, setEnvironmentMenuOpen] = useState(false);
+  const environmentMenuRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -75,6 +81,19 @@ export default function Sidebar({
   const [backendHint, setBackendHint] = useState("");
   const menuAnchorRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!environmentMenuOpen) return;
+    function dismiss(event: PointerEvent) {
+      if (!environmentMenuRef.current?.contains(event.target as Node)) setEnvironmentMenuOpen(false);
+    }
+    function escape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") { event.preventDefault(); setEnvironmentMenuOpen(false); }
+    }
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
+  }, [environmentMenuOpen]);
 
   useEffect(() => {
     getSavedTheme().then(setTheme);
@@ -111,6 +130,7 @@ export default function Sidebar({
     }
 
     setVisible(false);
+    setEnvironmentMenuOpen(false);
     setMenuOpenFor(null);
     setRenamingId(null);
     setSearchValue("");
@@ -525,15 +545,31 @@ export default function Sidebar({
         </div>
 
         <div className="sidebar-footer">
-          <button type="button" className="sidebar-user-row">
-            <span className="sidebar-user-avatar" aria-hidden="true">
-              {userName.charAt(0)}
-            </span>
-            <span className="sidebar-user-info">
-              <span className="sidebar-user-name">{userName}</span>
-              <span className="sidebar-user-plan">{CURRENT_USER_PLAN}</span>
-            </span>
-          </button>
+          <div className="sidebar-profile" ref={environmentMenuRef}>
+            {environmentMenuOpen && (
+              <div className="sidebar-environment-menu">
+                <EnvironmentOptions environment={environment} onChange={next => {
+                  setEnvironmentMenuOpen(false);
+                  if (next !== environment) onEnvironmentChange(next);
+                }} />
+              </div>
+            )}
+            <button
+              type="button"
+              className="sidebar-user-row"
+              aria-expanded={environmentMenuOpen}
+              aria-label={`Profile and PMS environment: ${PMS_ENVIRONMENTS[environment].label}`}
+              onClick={() => setEnvironmentMenuOpen(value => !value)}
+            >
+              <span className="sidebar-user-avatar" aria-hidden="true">
+                {userName.charAt(0)}
+              </span>
+              <span className="sidebar-user-info">
+                <span className="sidebar-user-name">{userName || "PMS profile"}</span>
+                <span className="sidebar-user-plan">{PMS_ENVIRONMENTS[environment].label}</span>
+              </span>
+            </button>
+          </div>
 
           <button
             type="button"

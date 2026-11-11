@@ -57,6 +57,24 @@
   color: var(--text-primary);
 }
 
+.chat-brand-labels {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.chat-brand-labels .chat-brand-name,
+.chat-environment,
+.chat-environment-separator {
+  line-height: 1;
+}
+
+.chat-environment,
+.chat-environment-separator {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
 .chat-topbar-actions {
   display: flex;
   align-items: center;

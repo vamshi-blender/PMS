@@ -5,36 +5,36 @@
 // session. Tools will later resolve "the page" through this scope instead of
 // the focused window (out of scope for now — see getSessionTabs).
 
-export const PMS_HOSTNAMES = [
-  "quixyhome.kwixee.co.in",
-  // Unauthenticated visits redirect here, so the login page is still PMS.
-  "quixyhomeapp.kwixee.co.in",
-];
-
-export const PMS_HOME_URL = "https://quixyhome.kwixee.co.in";
+import { environmentFromUrl, getSelectedEnvironment, PMS_ENVIRONMENTS, PMS_SESSION_KEY, selectEnvironment, type PmsEnvironment } from "./pmsEnvironment";
 
 const SESSION_GROUP_KEY = "donnaTabGroupId";
 
-export function isPmsUrl(url: string | undefined): boolean {
-  if (!url) return false;
-  try {
-    return PMS_HOSTNAMES.includes(new URL(url).hostname);
-  } catch {
-    return false;
-  }
+export function isPmsUrl(url: string | undefined, environment?: PmsEnvironment): boolean {
+  const found = environmentFromUrl(url);
+  return found !== null && (environment === undefined || found === environment);
 }
 
-async function createPmsTab(windowId: number): Promise<number> {
+/** Chrome exposes a new tab's destination as pendingUrl until navigation
+ * commits. Prefer it so a loading PMS tab is not mistaken for a missing tab. */
+export function isPmsTab(tab: chrome.tabs.Tab, environment?: PmsEnvironment): boolean {
+  return isPmsUrl(tab.pendingUrl ?? tab.url, environment);
+}
+
+async function createPmsTab(windowId: number, environment: PmsEnvironment, active = false): Promise<number> {
   const tab = await chrome.tabs.create({
-    url: PMS_HOME_URL,
+    url: PMS_ENVIRONMENTS[environment].homeUrl,
     windowId,
-    active: true,
+    active,
   });
   if (tab.id === undefined) throw new Error("Could not open the PMS tab.");
   return tab.id;
 }
 
 async function setSessionGroup(groupId: number): Promise<number> {
+  const stored = await chrome.storage.session.get(SESSION_GROUP_KEY);
+  if (stored[SESSION_GROUP_KEY] !== groupId) {
+    await chrome.storage.session.set({ [PMS_SESSION_KEY]: crypto.randomUUID() });
+  }
   await chrome.storage.session.set({ [SESSION_GROUP_KEY]: groupId });
   return groupId;
 }
@@ -48,27 +48,60 @@ async function setSessionGroup(groupId: number): Promise<number> {
 export async function ensureSessionTabGroup(
   tab: chrome.tabs.Tab,
 ): Promise<number> {
-  if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-    const members = await chrome.tabs.query({ groupId: tab.groupId });
-    if (!members.some((member) => isPmsUrl(member.url))) {
-      const pmsTabId = await createPmsTab(tab.windowId);
-      await chrome.tabs.group({ tabIds: [pmsTabId], groupId: tab.groupId });
-    }
-    return setSessionGroup(tab.groupId);
+  const detected = environmentFromUrl(tab.pendingUrl ?? tab.url);
+  if (detected) await selectEnvironment(detected);
+  let groupId = tab.groupId;
+  let anchorEnvironment: PmsEnvironment | undefined;
+  if (groupId === chrome.tabGroups.TAB_GROUP_ID_NONE && !detected) {
+    const previous = await getSessionTabGroupId();
+    if (previous !== null && (await chrome.tabGroups.get(previous)).windowId === tab.windowId) groupId = previous;
   }
-
-  const anchorTabId =
-    isPmsUrl(tab.url) && tab.id !== undefined
-      ? tab.id
-      : await createPmsTab(tab.windowId);
-  const groupId = await chrome.tabs.group({
-    tabIds: [anchorTabId],
-    createProperties: { windowId: tab.windowId },
-  });
-  // Only groups Donna creates get named; user-made groups keep their identity.
-  await chrome.tabGroups.update(groupId, { title: "Donna", color: "blue" });
-  return setSessionGroup(groupId);
+  if (groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
+    const anchorTabId = detected && tab.id !== undefined
+      ? tab.id : await createPmsTab(tab.windowId, "staging");
+    groupId = await chrome.tabs.group({ tabIds: [anchorTabId], createProperties: { windowId: tab.windowId } });
+    anchorEnvironment = detected ?? "staging";
+    await chrome.tabGroups.update(groupId, { title: "Donna", color: "blue" });
+  }
+  await setSessionGroup(groupId);
+  // Opening Donna on an unrelated page makes both environments available.
+  for (const environment of detected ? [detected] : ["staging", "production"] as PmsEnvironment[]) {
+    // We already know which environment the newly grouped anchor belongs to,
+    // even before Chrome reports either its URL or pending URL in queries.
+    if (environment === anchorEnvironment) continue;
+    await ensureEnvironmentTab(environment);
+  }
+  return groupId;
 }
+
+/** Only tabs in this session group can provide its login. Never borrow a tab
+ * (or account) from another window/group as an authentication fallback. */
+export async function ensureEnvironmentTab(environment: PmsEnvironment, active = false): Promise<chrome.tabs.Tab> {
+  const groupId = await getSessionTabGroupId();
+  if (groupId === null) throw new Error("Open Donna from a browser tab to start a PMS session.");
+  const members = await chrome.tabs.query({ groupId });
+  let tab = members.find(member => isPmsTab(member, environment));
+  if (!tab) {
+    const group = await chrome.tabGroups.get(groupId);
+    const id = await createPmsTab(group.windowId, environment, active);
+    await chrome.tabs.group({ tabIds: [id], groupId });
+    tab = await chrome.tabs.get(id);
+  } else if (active && tab.id !== undefined) {
+    tab = await chrome.tabs.update(tab.id, { active: true });
+  }
+  if (!tab) throw new Error("The PMS tab closed while switching environments. Try again.");
+  return tab;
+}
+
+export async function switchPmsEnvironment(environment: PmsEnvironment): Promise<void> {
+  const tab = await ensureEnvironmentTab(environment);
+  // Persist before activating: Chrome action popups close as soon as focus
+  // moves to a browser tab, which can interrupt their remaining async work.
+  await selectEnvironment(environment);
+  if (tab.id !== undefined) await chrome.tabs.update(tab.id, { active: true });
+}
+
+export { getSelectedEnvironment };
 
 /**
  * Session flow for the side panel, run by the panel page when it mounts.
@@ -124,7 +157,7 @@ export async function endSessionIfGroup(groupId: number): Promise<void> {
 async function groupHasPmsTab(groupId: number): Promise<boolean> {
   try {
     const members = await chrome.tabs.query({ groupId });
-    return members.some((member) => isPmsUrl(member.url));
+    return members.some((member) => isPmsTab(member));
   } catch {
     return false;
   }

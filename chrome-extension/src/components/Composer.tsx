@@ -46,6 +46,37 @@ interface ComposerProps {
   onVoiceMode?: () => void;
 }
 
+// Mock values until real token accounting is wired in.
+const MOCK_CONTEXT_USED = 38_400;
+const MOCK_CONTEXT_MAX = 128_000;
+
+function ContextUsage({ used, max }: { used: number; max: number }) {
+  const ratio = Math.min(used / max, 1);
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const percent = Math.round(ratio * 100);
+  const label = `${used.toLocaleString()} / ${max.toLocaleString()} tokens (${percent}%)`;
+  return (
+    <div
+      className="composer-context composer-tooltip"
+      role="img"
+      tabIndex={0}
+      aria-label={`Context window: ${label}`}
+      data-tooltip={label}
+    >
+      <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+        <circle className="composer-context-track" cx="10" cy="10" r={radius} />
+        <circle
+          className="composer-context-fill"
+          cx="10" cy="10" r={radius}
+          strokeDasharray={circumference}
+          strokeDashoffset={circumference * (1 - ratio)}
+        />
+      </svg>
+    </div>
+  );
+}
+
 function resizeTextarea(element: HTMLTextAreaElement) {
   element.style.height = "auto";
   element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
@@ -531,14 +562,17 @@ export default function Composer({
       />
 
       <div className="composer-toolbar">
-        <button
-          type="button"
-          className="composer-icon-btn composer-tooltip"
-          aria-label="Attach"
-          data-tooltip="Attach"
-        >
-          <HugeiconsIcon icon={Add01Icon} size={20} />
-        </button>
+        <div className="composer-leading">
+          <button
+            type="button"
+            className="composer-icon-btn composer-tooltip"
+            aria-label="Attach"
+            data-tooltip="Attach"
+          >
+            <HugeiconsIcon icon={Add01Icon} size={20} />
+          </button>
+          <ContextUsage used={MOCK_CONTEXT_USED} max={MOCK_CONTEXT_MAX} />
+        </div>
 
         <div className="composer-trailing">
           <button

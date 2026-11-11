@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { DisplayMode } from "./mode";
 import ChatLayout from "./components/ChatLayout";
 import PmsSessionGate from "./components/PmsSessionGate";
-import { getPmsAuthState } from "./api/pmsAuth";
+import { capturePmsScope, getPmsAuthState } from "./api/pmsAuth";
+import { ENVIRONMENT_IDS, ENVIRONMENT_KEY, PMS_SESSION_KEY, getSelectedEnvironment, type PmsEnvironment } from "./api/pmsEnvironment";
+import { establishSessionFromCurrentTab, switchPmsEnvironment } from "./api/pmsSession";
 
 // How often the PMS session is re-checked once settled (steady-state poll).
 // The same poll flips the UI both ways: gate → chat on login, chat → gate on
@@ -26,9 +28,55 @@ interface AppProps {
 
 export default function App({ ctx }: AppProps) {
   const [phase, setPhase] = useState<AuthPhase>("checking");
+  const [environment, setEnvironment] = useState<PmsEnvironment | null>(null);
+  const [userKey, setUserKey] = useState("");
+  const authenticatedRef = useRef(false);
+  const [switchError, setSwitchError] = useState("");
+  const switchingRef = useRef(false);
+  const initializedRef = useRef(false);
   const graceDeadlineRef = useRef<number | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    // Pop-out toolbar handling already established the group in the worker.
+    // Side panels and action popups establish it here, before auth polling.
+    const ready = ctx === "popout" ? Promise.resolve() : establishSessionFromCurrentTab();
+    void ready.then(getSelectedEnvironment).then(value => {
+      if (!cancelled) { initializedRef.current = true; setEnvironment(value); }
+    }).catch(error => {
+      if (!cancelled) {
+        setSwitchError(error instanceof Error ? error.message : "Could not open PMS.");
+        setPhase("gate");
+      }
+    });
+    const changed = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      const value = changes[ENVIRONMENT_KEY]?.newValue;
+      if (!initializedRef.current || area !== "session" || (value !== "staging" && value !== "production")) return;
+      setPhase("checking");
+      graceDeadlineRef.current = null;
+      setEnvironment(value);
+    };
+    chrome.storage.onChanged.addListener(changed);
+    return () => { cancelled = true; chrome.storage.onChanged.removeListener(changed); };
+  }, [ctx]);
+
+  async function changeEnvironment(next: PmsEnvironment) {
+    if (next === environment || switchingRef.current) return;
+    switchingRef.current = true;
+    setSwitchError("");
+    setPhase("checking");
+    try {
+      await switchPmsEnvironment(next);
+      graceDeadlineRef.current = null;
+      setEnvironment(next);
+    } catch (error) {
+      setSwitchError(error instanceof Error ? error.message : "Could not switch PMS environment.");
+      setPhase("gate");
+    } finally { switchingRef.current = false; }
+  }
+
+  useEffect(() => {
+    if (!environment) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
@@ -38,14 +86,33 @@ export default function App({ ctx }: AppProps) {
     };
 
     const check = async () => {
-      const state = await getPmsAuthState();
+      // Each login is independent; neither environment requires the other.
+      const states = await Promise.all(ENVIRONMENT_IDS.map(env => getPmsAuthState(env)));
+      const state = states[ENVIRONMENT_IDS.indexOf(environment)];
       if (cancelled) return;
+      if (switchingRef.current) { scheduleNext(AUTH_GRACE_POLL_MS); return; }
 
       if (state.status === "ok") {
+        try {
+          const scope = await capturePmsScope();
+          if (cancelled || scope.environment !== environment) return;
+          const nextUser = `${scope.organizationId}:${scope.userId}`;
+          setUserKey(`${nextUser}:${scope.sessionId}`);
+          authenticatedRef.current = true;
+        } catch {
+          if (!cancelled) { setPhase("gate"); scheduleNext(AUTH_POLL_MS); }
+          return;
+        }
         graceDeadlineRef.current = null;
         setPhase("authed");
         scheduleNext(AUTH_POLL_MS);
         return;
+      }
+
+      if (authenticatedRef.current) {
+        authenticatedRef.current = false;
+        await chrome.storage.session.set({ [PMS_SESSION_KEY]: crypto.randomUUID() });
+        if (cancelled) return;
       }
 
       // Not authed yet. "no-tab" (no PMS tab exists at all) has nothing to
@@ -74,7 +141,7 @@ export default function App({ ctx }: AppProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [environment]);
 
   // The background worker broadcasts this once the session's tab group is
   // gone (closed, ungrouped, or its PMS tab removed) — there is no longer a
@@ -89,6 +156,6 @@ export default function App({ ctx }: AppProps) {
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, []);
 
-  if (phase === "authed") return <ChatLayout ctx={ctx} />;
-  return <PmsSessionGate mode={phase === "checking" ? "checking" : "gate"} />;
+  if (phase === "authed" && environment) return <ChatLayout key={`${environment}:${userKey}`} ctx={ctx} environment={environment} onEnvironmentChange={changeEnvironment} />;
+  return <PmsSessionGate environment={environment ?? "staging"} onEnvironmentChange={changeEnvironment} error={switchError} mode={phase === "checking" ? "checking" : "gate"} />;
 }

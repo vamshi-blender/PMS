@@ -5,24 +5,27 @@
 // chrome.storage.local as an offline/startup fallback.
 import { getBackendUrl } from "../api/backend";
 import type { PmsBundle } from "./types";
+import { scopeForSignal } from "../api/pmsAuth";
+import { getSelectedEnvironment, type PmsEnvironment } from "../api/pmsEnvironment";
 
 const BUNDLE_CACHE_KEY = "donnaPmsBundle";
-const SUPPORTED_BUNDLE_VERSION = 5;
+const SUPPORTED_BUNDLE_VERSION = 7;
 
-function isUsableBundle(value: unknown): value is PmsBundle {
+function isUsableBundle(value: unknown, environment: PmsEnvironment): value is PmsBundle {
   if (!value || typeof value !== "object") return false;
   const bundle = value as PmsBundle;
   return (
     bundle.version === SUPPORTED_BUNDLE_VERSION &&
+    bundle.environment === environment &&
     typeof bundle.lookups === "object" &&
     typeof bundle.actions === "object"
   );
 }
 
-async function readCachedBundle(): Promise<PmsBundle | null> {
-  const stored = await chrome.storage.local.get(BUNDLE_CACHE_KEY);
-  const cached = stored[BUNDLE_CACHE_KEY];
-  return isUsableBundle(cached) ? cached : null;
+async function readCachedBundle(key: string, environment: PmsEnvironment): Promise<PmsBundle | null> {
+  const stored = await chrome.storage.local.get(key);
+  const cached = stored[key];
+  return isUsableBundle(cached, environment) ? cached : null;
 }
 
 /**
@@ -32,18 +35,20 @@ async function readCachedBundle(): Promise<PmsBundle | null> {
 export async function getPmsBundle(signal?: AbortSignal): Promise<PmsBundle> {
   signal?.throwIfAborted();
   const backendUrl = await getBackendUrl();
+  const environment = scopeForSignal(signal)?.environment ?? await getSelectedEnvironment();
+  const key = `${BUNDLE_CACHE_KEY}:${backendUrl}:${environment}`;
   try {
-    const response = await fetch(`${backendUrl}/api/pms/manifests`, { signal });
+    const response = await fetch(`${backendUrl}/api/pms/manifests?environment=${environment}`, { signal });
     if (!response.ok) throw new Error(`Bundle fetch failed (${response.status}).`);
     const bundle: unknown = await response.json();
-    if (!isUsableBundle(bundle)) {
+    if (!isUsableBundle(bundle, environment)) {
       throw new Error("The server returned a PMS bundle this extension version does not support.");
     }
-    await chrome.storage.local.set({ [BUNDLE_CACHE_KEY]: bundle });
+    await chrome.storage.local.set({ [key]: bundle });
     return bundle;
   } catch (error) {
     signal?.throwIfAborted();
-    const cached = await readCachedBundle();
+    const cached = await readCachedBundle(key, environment);
     if (cached) return cached;
     throw error instanceof Error
       ? error

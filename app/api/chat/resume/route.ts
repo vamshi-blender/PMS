@@ -5,6 +5,7 @@ import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import type { ClientToolResult } from "@/lib/agents/donna";
 import { getPendingRun, takePendingRun } from "@/lib/agents/pending-runs";
 import { restoreRunState, streamDonnaRun } from "@/lib/agents/stream-run";
+import { pmsScopeSchema, samePmsScope } from "@/shared/pms-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,9 @@ export const dynamic = "force-dynamic";
 const resumeRequestSchema = z
   .object({
     runId: z.string().uuid(),
+    scope: pmsScopeSchema,
+    conversationId: z.string().min(1).max(200),
+    argumentsHash: z.string().regex(/^[a-f0-9]{64}$/),
     toolCallId: z.string().min(1).max(300),
     approved: z.boolean(),
     claimId: z.string().uuid().optional(),
@@ -60,6 +64,11 @@ export async function POST(request: Request) {
       { error: "This tool request expired or was already handled." },
       { status: 410, headers: corsHeaders(origin) },
     );
+  }
+
+  if (!pending.context?.scope || !samePmsScope(pending.context.scope, parsed.data.scope) ||
+      pending.conversationId !== parsed.data.conversationId || pending.argumentsHash !== parsed.data.argumentsHash) {
+    return Response.json({ error: "Approval environment, user, conversation or inputs changed. Start a new request." }, { status: 409, headers: corsHeaders(origin) });
   }
 
   // Client-executed tools return their result from the browser; the tool's

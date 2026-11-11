@@ -7,6 +7,9 @@ import { streamChat } from "../chrome-extension/src/api/chat";
 import { getPmsBundle } from "../chrome-extension/src/pms/bundle";
 
 vi.mock("../chrome-extension/src/api/backend", () => ({ getBackendUrl: async () => "http://localhost" }));
+vi.mock("../chrome-extension/src/api/pmsAuth", () => ({ assertPmsScope: async () => "token", scopeForSignal: () => undefined }));
+vi.mock("../chrome-extension/src/api/pmsEnvironment", () => ({ getSelectedEnvironment: async () => "staging" }));
+const scope = { environment: "staging" as const, userId: "user", organizationId: "org", sessionId: "00000000-0000-4000-8000-000000000001" };
 setTracingDisabled(true);
 const originalModel = donnaAgent.model;
 afterEach(() => {
@@ -45,7 +48,7 @@ it("aborts the model when the stream reader cancels, without writing to the clos
 
 it("rejects a truncated response instead of leaving the chat waiting", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"type":"response.started","requestId":"r","conversationId":"c"}\n')));
-  await expect(streamChat({ message: "Hello", signal: new AbortController().signal, onEvent: vi.fn() }))
+  await expect(streamChat({ message: "Hello", scope, environment: "staging", signal: new AbortController().signal, onEvent: vi.fn() }))
     .rejects.toThrow("connection ended before Donna finished");
 });
 
@@ -56,7 +59,7 @@ it("cancels and unlocks the reader when a malformed event is received", async ()
     cancel,
   });
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
-  await expect(streamChat({ message: "Hello", signal: new AbortController().signal, onEvent: vi.fn() })).rejects.toThrow("unknown stream event");
+  await expect(streamChat({ message: "Hello", scope, environment: "staging", signal: new AbortController().signal, onEvent: vi.fn() })).rejects.toThrow("unknown stream event");
   expect(cancel).toHaveBeenCalledOnce();
   expect(body.locked).toBe(false);
 });

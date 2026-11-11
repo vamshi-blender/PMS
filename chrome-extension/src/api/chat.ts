@@ -1,5 +1,18 @@
 import { getBackendUrl } from "./backend";
 import { isChatStreamEvent, type ChatStreamEvent } from "./protocol";
+import type { ToolApprovalRequest } from "./protocol";
+import { assertPmsScope } from "./pmsAuth";
+import { toolArgumentsHash, type PmsScope } from "../../../shared/pms-scope";
+import type { PmsEnvironment } from "./pmsEnvironment";
+
+async function approvalBinding(request: ToolApprovalRequest, signal: AbortSignal) {
+  if (!request.scope || !request.conversationId || !request.argumentsHash ||
+      request.argumentsHash !== await toolArgumentsHash(request.name, request.arguments)) {
+    throw new Error("This approval is unbound or its inputs changed. Start a new request.");
+  }
+  await assertPmsScope(request.scope, signal);
+  return { scope: request.scope, conversationId: request.conversationId, argumentsHash: request.argumentsHash };
+}
 
 interface StreamRequestOptions {
   path: "/api/chat" | "/api/chat/resume";
@@ -73,16 +86,23 @@ async function streamRequest({
   }
 }
 
-export function streamChat(options: {
+export async function streamChat(options: {
   message: string;
+  environment: PmsEnvironment;
+  scope: PmsScope | undefined;
   conversationId?: string;
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
 }) {
+  const scope = options.scope;
+  if (!scope) throw new Error("PMS session is not ready. Try again.");
+  await assertPmsScope(scope, options.signal);
+  if (scope.environment !== options.environment) throw new Error("PMS environment changed. Start a new request.");
   return streamRequest({
     path: "/api/chat",
     body: {
       message: options.message,
+      scope,
       ...(options.conversationId
         ? { conversationId: options.conversationId }
         : {}),
@@ -92,7 +112,8 @@ export function streamChat(options: {
   });
 }
 
-export function resumeChat(options: {
+export async function resumeChat(options: {
+  request: ToolApprovalRequest;
   runId: string;
   toolCallId: string;
   approved: boolean;
@@ -103,10 +124,13 @@ export function resumeChat(options: {
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
 }) {
+  const binding = await approvalBinding(options.request, options.signal);
+  if (options.runId !== options.request.runId || options.toolCallId !== options.request.toolCallId) throw new Error("Approval call changed.");
   return streamRequest({
     path: "/api/chat/resume",
     body: {
       runId: options.runId,
+      ...binding,
       toolCallId: options.toolCallId,
       approved: options.approved,
       ...(options.claimId ? { claimId: options.claimId } : {}),
@@ -119,13 +143,14 @@ export function resumeChat(options: {
   });
 }
 
-export async function claimToolExecution(request: { runId: string; toolCallId: string }, signal: AbortSignal): Promise<string> {
+export async function claimToolExecution(request: ToolApprovalRequest, signal: AbortSignal): Promise<string> {
+  const binding = await approvalBinding(request, signal);
   const backendUrl = await getBackendUrl();
   signal.throwIfAborted();
   const response = await fetch(`${backendUrl}/api/chat/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ runId: request.runId, toolCallId: request.toolCallId }),
+    body: JSON.stringify({ runId: request.runId, toolCallId: request.toolCallId, ...binding }),
     signal,
   });
   if (!response.ok) throw new Error(await readError(response));
@@ -160,12 +185,14 @@ export async function generateConversationTitle(message: string): Promise<string
   return body.title.trim().slice(0, 56);
 }
 
-export async function deleteConversation(conversationId: string): Promise<void> {
+export async function deleteConversation(conversationId: string, scope: PmsScope | undefined): Promise<void> {
+  if (!scope) throw new Error("PMS session is not ready.");
+  await assertPmsScope(scope);
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}/api/conversations`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ conversationId }),
+    body: JSON.stringify({ conversationId, scope }),
   });
 
   if (!response.ok) throw new Error(await readError(response));

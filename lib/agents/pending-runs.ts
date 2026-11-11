@@ -9,6 +9,7 @@ export interface PendingRun {
   state?: RunState<DonnaRunContext, typeof donnaAgent>;
   context?: DonnaRunContext;
   claimId?: string;
+  argumentsHash?: string;
   conversationId: string;
   toolCallId: string;
   toolName: string;

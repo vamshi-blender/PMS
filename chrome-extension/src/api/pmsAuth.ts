@@ -3,17 +3,17 @@
 // rides the session the user currently has in the PMS web app. pmsFetch() is
 // the single entry point all authenticated PMS calls (lookups, resolvers,
 // executors) must go through.
-import { getSessionTabs, isPmsUrl, PMS_HOME_URL } from "./pmsSession";
+import { ensureEnvironmentTab, getSessionTabs, isPmsTab } from "./pmsSession";
+import { getPmsSessionId, getSelectedEnvironment, PMS_ENVIRONMENTS, type PmsEnvironment } from "./pmsEnvironment";
+import { samePmsScope, type PmsScope } from "../../../shared/pms-scope";
 
-export const PMS_API_URL = "https://quixyhomeapi.kwixee.co.in";
+const requestScopes = new WeakMap<AbortSignal, PmsScope>();
+const identityCache = new Map<PmsEnvironment, { token: string; user: PmsUser }>();
 
 // The Quixy SPA stores its OIDC session under this literal key in the
 // localStorage of the quixyhome origin. The login page lives on the
 // quixyhomeapp origin, whose storage never holds the token — so a tab parked
 // on the login page correctly reads as logged out.
-const OIDC_STORAGE_KEY =
-  "oidc.user:https://quixyhomeapp.kwixee.co.in/:angular_spa";
-
 export type PmsAuthState =
   | { status: "ok"; token: string }
   // At least one PMS tab exists, fully loaded, but none holds a live token.
@@ -22,20 +22,8 @@ export type PmsAuthState =
   | { status: "loading" }
   | { status: "no-tab" };
 
-/** PMS tabs to try, session-group tabs first, then any PMS tab anywhere. */
-async function findPmsTabs(): Promise<chrome.tabs.Tab[]> {
-  const [sessionTabs, allTabs] = await Promise.all([
-    getSessionTabs(),
-    chrome.tabs.query({}),
-  ]);
-  const seen = new Set<number>();
-  const candidates: chrome.tabs.Tab[] = [];
-  for (const tab of [...sessionTabs, ...allTabs]) {
-    if (tab.id === undefined || seen.has(tab.id) || !isPmsUrl(tab.url)) continue;
-    seen.add(tab.id);
-    candidates.push(tab);
-  }
-  return candidates;
+async function findPmsTabs(environment: PmsEnvironment): Promise<chrome.tabs.Tab[]> {
+  return (await getSessionTabs()).filter(tab => tab.id !== undefined && isPmsTab(tab, environment));
 }
 
 // Runs inside the PMS page; must stay self-contained.
@@ -47,12 +35,12 @@ function readStorageEntry(storageKey: string): string | null {
   }
 }
 
-async function readTokenFromTab(tabId: number): Promise<string | null> {
+async function readTokenFromTab(tabId: number, environment: PmsEnvironment): Promise<string | null> {
   try {
     const [execution] = await chrome.scripting.executeScript({
       target: { tabId },
       func: readStorageEntry,
-      args: [OIDC_STORAGE_KEY],
+      args: [PMS_ENVIRONMENTS[environment].storageKey],
     });
     const raw = execution?.result;
     if (typeof raw !== "string") return null;
@@ -75,13 +63,13 @@ async function readTokenFromTab(tabId: number): Promise<string | null> {
   }
 }
 
-export async function getPmsAuthState(): Promise<PmsAuthState> {
-  const tabs = await findPmsTabs();
+export async function getPmsAuthState(environment: PmsEnvironment = "staging"): Promise<PmsAuthState> {
+  const tabs = await findPmsTabs(environment);
   if (tabs.length === 0) return { status: "no-tab" };
 
   let anyLoading = false;
   for (const tab of tabs) {
-    const token = await readTokenFromTab(tab.id!);
+    const token = await readTokenFromTab(tab.id!, environment);
     if (token) return { status: "ok", token };
     if (tab.status === "loading") anyLoading = true;
   }
@@ -94,8 +82,8 @@ export async function getPmsAuthState(): Promise<PmsAuthState> {
   return { status: anyLoading ? "loading" : "logged-out" };
 }
 
-export async function getPmsAccessToken(): Promise<string> {
-  const state = await getPmsAuthState();
+export async function getPmsAccessToken(environment: PmsEnvironment = "staging"): Promise<string> {
+  const state = await getPmsAuthState(environment);
   if (state.status !== "ok") {
     throw new Error(
       state.status === "no-tab"
@@ -112,11 +100,14 @@ export async function pmsFetch(
   init: RequestInit = {},
 ): Promise<Response> {
   init.signal?.throwIfAborted();
-  const token = await getPmsAccessToken();
+  const scope = init.signal ? requestScopes.get(init.signal) : undefined;
+  if (!scope) throw new Error("PMS requests require a bound user session. Start a new request.");
+  const token = await assertPmsScope(scope, init.signal ?? undefined);
   init.signal?.throwIfAborted();
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
-  return fetch(`${PMS_API_URL}${path}`, { ...init, headers });
+  if (!path.startsWith("/api/") || path.includes("\\") || path.includes("#")) throw new Error("Invalid PMS API path.");
+  return fetch(`${PMS_ENVIRONMENTS[scope.environment].apiUrl}${path}`, { ...init, headers, redirect: "error" });
 }
 
 export interface PmsUser {
@@ -131,8 +122,24 @@ export interface PmsUser {
   organizationId: string;
 }
 
-export async function getPmsUserDetails(signal?: AbortSignal): Promise<PmsUser> {
-  const response = await pmsFetch("/api/User/GetUserDetails", { signal });
+export async function getPmsUserDetails(signal?: AbortSignal, environment?: PmsEnvironment): Promise<PmsUser> {
+  const bound = signal ? requestScopes.get(signal) : undefined;
+  if (bound) {
+    await assertPmsScope(bound, signal);
+    return identityCache.get(bound.environment)!.user;
+  }
+  environment ??= await getSelectedEnvironment();
+  const token = await getPmsAccessToken(environment);
+  return userForToken(environment, token, signal);
+}
+
+async function userForToken(environment: PmsEnvironment, token: string, signal?: AbortSignal): Promise<PmsUser> {
+  signal?.throwIfAborted();
+  const cached = identityCache.get(environment);
+  if (cached?.token === token) return cached.user;
+  const response = await fetch(`${PMS_ENVIRONMENTS[environment].apiUrl}/api/User/GetUserDetails`, {
+    signal, headers: { Authorization: `Bearer ${token}` }, redirect: "error",
+  });
   if (!response.ok) {
     throw new Error(`PMS user lookup failed (${response.status}).`);
   }
@@ -140,7 +147,7 @@ export async function getPmsUserDetails(signal?: AbortSignal): Promise<PmsUser> 
   const record = (data ?? {}) as Record<string, unknown>;
   const str = (key: string) =>
     typeof record[key] === "string" ? (record[key] as string) : "";
-  return {
+  const user = {
     firstName: str("FirstName"),
     lastName: str("LastName"),
     email: str("EmailId"),
@@ -150,6 +157,62 @@ export async function getPmsUserDetails(signal?: AbortSignal): Promise<PmsUser> 
     contactNumber: str("ContactNumber"),
     organizationId: str("OrganizationId"),
   };
+  if (!user.userId || !user.organizationId) throw new Error("PMS did not return a valid user identity.");
+  identityCache.set(environment, { token, user });
+  return user;
+}
+
+/** Capture once per text run/voice session, then recheck before every PMS call.
+ * A changed token is resolved afresh; a refresh for the same user is allowed. */
+export async function capturePmsScope(signal?: AbortSignal): Promise<PmsScope> {
+  const environment = await getSelectedEnvironment();
+  const sessionId = await getPmsSessionId();
+  const user = await getPmsUserDetails(signal, environment);
+  const scope = { environment, sessionId, userId: user.userId, organizationId: user.organizationId };
+  await assertPmsScope(scope, signal);
+  return scope;
+}
+
+export async function assertPmsScope(scope: PmsScope, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const environment = await getSelectedEnvironment();
+  const sessionId = await getPmsSessionId();
+  if (scope.environment !== environment || scope.sessionId !== sessionId) throw new Error("PMS environment or session changed. Start a new request.");
+  const token = await getPmsAccessToken(environment);
+  const user = await userForToken(environment, token, signal);
+  if (!samePmsScope(scope, { environment, sessionId, userId: user.userId, organizationId: user.organizationId })) {
+    throw new Error("The signed-in PMS user changed. Start a new request.");
+  }
+  // Recheck after asynchronous identity resolution, immediately before dispatch.
+  if (await getSelectedEnvironment() !== environment || await getPmsSessionId() !== sessionId) throw new Error("PMS environment or session changed. Start a new request.");
+  signal?.throwIfAborted();
+  return token;
+}
+
+export function scopeForSignal(signal?: AbortSignal): PmsScope | undefined {
+  return signal ? requestScopes.get(signal) : undefined;
+}
+
+export async function withPmsScope<T>(scope: PmsScope, signal: AbortSignal | undefined, execute: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  const changed = () => {
+    void Promise.all([getSelectedEnvironment(), getPmsSessionId()]).then(([environment, sessionId]) => {
+      if (scope.environment !== environment || scope.sessionId !== sessionId) controller.abort(new Error("PMS session changed."));
+    });
+  };
+  chrome.storage.onChanged.addListener(changed);
+  requestScopes.set(controller.signal, scope);
+  try {
+    await assertPmsScope(scope, controller.signal);
+    return await execute(controller.signal);
+  } finally {
+    requestScopes.delete(controller.signal);
+    signal?.removeEventListener("abort", abort);
+    chrome.storage.onChanged.removeListener(changed);
+  }
 }
 
 /**
@@ -157,13 +220,8 @@ export async function getPmsUserDetails(signal?: AbortSignal): Promise<PmsUser> 
  * tab, focuses its window (restoring it if minimized), or opens a fresh PMS
  * tab when none exists.
  */
-export async function focusPmsTab(): Promise<void> {
-  const [tab] = await findPmsTabs();
-  if (tab?.id === undefined) {
-    await chrome.tabs.create({ url: PMS_HOME_URL, active: true });
-    return;
-  }
-  await chrome.tabs.update(tab.id, { active: true });
+export async function focusPmsTab(environment: PmsEnvironment): Promise<void> {
+  const tab = await ensureEnvironmentTab(environment, true);
   const win = await chrome.windows.get(tab.windowId);
   await chrome.windows.update(tab.windowId, {
     focused: true,

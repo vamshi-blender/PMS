@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
+import { pmsScopeSchema } from "@/shared/pms-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
 const deleteConversationSchema = z
   .object({
     conversationId: z.string().min(1).max(200),
+    scope: pmsScopeSchema,
   })
   .strict();
 
@@ -58,6 +60,14 @@ export async function DELETE(request: Request) {
 
   try {
     const openai = new OpenAI();
+    const conversation = await openai.conversations.retrieve(parsed.data.conversationId, { signal: request.signal });
+    const metadata = (conversation.metadata ?? {}) as Record<string, unknown>;
+    const scope = parsed.data.scope;
+    if (metadata.pms_environment ?
+      metadata.pms_environment !== scope.environment || metadata.pms_user !== scope.userId || metadata.pms_organization !== scope.organizationId :
+      scope.environment !== "staging") {
+      return Response.json({ error: "This conversation belongs to another PMS environment or user." }, { status: 409, headers: corsHeaders(origin) });
+    }
     await openai.conversations.delete(parsed.data.conversationId, {
       signal: request.signal,
     });

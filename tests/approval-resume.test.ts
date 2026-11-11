@@ -9,6 +9,7 @@ import { POST as claim } from "../app/api/chat/claim/route";
 
 setTracingDisabled(true);
 const originalModel = donnaAgent.model;
+const scope = { environment: "staging" as const, userId: "user", organizationId: "org", sessionId: "00000000-0000-4000-8000-000000000001" };
 afterEach(() => {
   donnaAgent.model = originalModel;
   globalThis.__donnaPendingRuns?.clear();
@@ -29,6 +30,7 @@ async function pause() {
   donnaAgent.model = model;
   const response = new Response(streamDonnaRun({
     input: "Read this page",
+    context: { clientToolResults: {}, scope },
     conversationId: "conv-test",
     signal: new AbortController().signal,
   }));
@@ -39,12 +41,14 @@ async function pause() {
 }
 
 async function resume(body: Record<string, unknown>) {
+  const saved = getPendingRun(body.runId as string, body.toolCallId as string);
+  body = { scope: saved?.context?.scope ?? scope, conversationId: saved?.conversationId ?? "conv-test", argumentsHash: saved?.argumentsHash ?? "0".repeat(64), ...body };
   if (body.approved && !body.claimId) {
     const pending = getPendingRun(body.runId as string, body.toolCallId as string);
     if (pending) {
       if (!pending.claimId) {
         await claim(new Request("http://localhost/api/chat/claim", {
-          method: "POST", body: JSON.stringify({ runId: body.runId, toolCallId: body.toolCallId }),
+          method: "POST", body: JSON.stringify({ runId: body.runId, toolCallId: body.toolCallId, scope: body.scope, conversationId: body.conversationId, argumentsHash: body.argumentsHash }),
         }));
       }
       body = { ...body, claimId: pending.claimId };
@@ -66,9 +70,11 @@ describe("approval checkpoints", () => {
       }, approvalTitle: "Change status?", approvalDescription: "Model summary", confirmLabel: "Allow",
     }, { callId: "call-status" })], [assistantMessage("Changed status.")]]);
     donnaAgent.model = model;
-    const response = new Response(streamDonnaRun({ input: "Resolve QKA-49715", conversationId: "conv-status", signal: new AbortController().signal }));
+    const response = new Response(streamDonnaRun({ input: "Resolve QKA-49715", context: { clientToolResults: {}, scope: { ...scope, environment: "production" } }, conversationId: "conv-status", signal: new AbortController().signal }));
     const events = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
     const approval = events.find(event => event.type === "tool_approval.request");
+    expect(approval.description).toContain("Production PMS");
+    expect(approval.scope.environment).toBe("production");
     expect(approval.description).toContain("QKA-49715: Team Cordination");
     expect(approval.description).toContain("In Progress to Resolved");
     expect(approval.description).toContain("Change Remarks: Work complete");
@@ -79,7 +85,7 @@ describe("approval checkpoints", () => {
   });
   it("claims a browser action once before execution and rejects other claim owners", async () => {
     const { approval } = await pause();
-    const body = { runId: approval.runId, toolCallId: approval.toolCallId };
+    const body = { runId: approval.runId, toolCallId: approval.toolCallId, scope: approval.scope, conversationId: approval.conversationId, argumentsHash: approval.argumentsHash };
     const request = () => new Request("http://localhost/api/chat/claim", { method: "POST", body: JSON.stringify(body) });
     const claims = await Promise.all([claim(request()), claim(request())]);
     expect(claims.map((response) => response.status).sort()).toEqual([200, 409]);
@@ -88,6 +94,24 @@ describe("approval checkpoints", () => {
     }));
     expect(invalidOwner.status).toBe(409);
     expect(getPendingRun(approval.runId, approval.toolCallId)).toBeDefined();
+  });
+  it("rejects changed approval environment, user, session, conversation and inputs before claiming or consuming", async () => {
+    const { approval } = await pause();
+    const binding = { runId: approval.runId, toolCallId: approval.toolCallId, scope: approval.scope,
+      conversationId: approval.conversationId, argumentsHash: approval.argumentsHash };
+    const variants = [
+      { scope: { ...scope, environment: "production" } },
+      { scope: { ...scope, userId: "someone-else" } },
+      { scope: { ...scope, organizationId: "other-org" } },
+      { scope: { ...scope, sessionId: "00000000-0000-4000-8000-000000000002" } },
+      { conversationId: "other-conversation" }, { argumentsHash: "f".repeat(64) },
+    ];
+    for (const variant of variants) {
+      const body = { ...binding, ...variant };
+      expect((await claim(new Request("http://localhost/api/chat/claim", { method: "POST", body: JSON.stringify(body) }))).status).toBe(409);
+      expect((await POST(new Request("http://localhost/api/chat/resume", { method: "POST", body: JSON.stringify({ ...body, approved: false }) }))).status).toBe(409);
+      expect(getPendingRun(approval.runId, approval.toolCallId)?.claimId).toBeUndefined();
+    }
   });
   it("keeps a checkpoint after a wrong call ID or oversized result, then resumes once", async () => {
     const { approval, model } = await pause();

@@ -1,5 +1,7 @@
 import { parseTransitionDetails } from "../pms/status-change";
 import { executePmsAction, runPmsLookup } from "../pms/executor";
+import { withPmsScope } from "./pmsAuth";
+import { toolArgumentsHash } from "../../../shared/pms-scope";
 import type { PmsLookupFilter, PmsLookupQuery } from "../pms/types";
 import type { ToolApprovalRequest } from "./protocol";
 
@@ -71,6 +73,16 @@ const LOOKUP_OPERATORS = ["equals", "contains", "between"] as const;
  * names against the manifest, so this only guards the value shapes. */
 function parseLookupQuery(args: Record<string, unknown>): PmsLookupQuery {
   const query: PmsLookupQuery = {};
+  for (const field of ["fromDate", "toDate"] as const) {
+    if (args[field] !== undefined && args[field] !== null) {
+      if (typeof args[field] !== "string") throw new Error(`Invalid ${field}.`);
+      query[field] = args[field];
+    }
+  }
+  if (args.excludeWeekends !== undefined && args.excludeWeekends !== null) {
+    if (typeof args.excludeWeekends !== "boolean") throw new Error("Invalid weekend option.");
+    query.excludeWeekends = args.excludeWeekends;
+  }
   if (args.newStatus !== undefined && args.newStatus !== null) {
     if (typeof args.newStatus !== "string") throw new Error("Invalid target status.");
     query.newStatus = args.newStatus;
@@ -178,7 +190,13 @@ export async function executeClientTool(request: ToolApprovalRequest, signal?: A
   if (!handler) {
     throw new Error("Donna requested a browser tool that is not allowed.");
   }
-  const result = await handler(request, signal);
+  if (!request.scope) throw new Error("The tool request has no PMS session. Start a new request.");
+  if (request.runId === "realtime") {
+    if (request.name !== "pms_lookup") throw new Error("Voice supports read-only PMS lookups.");
+  } else if (!request.conversationId || !request.argumentsHash || request.argumentsHash !== await toolArgumentsHash(request.name, request.arguments)) {
+    throw new Error("Approval inputs changed. Start a new request.");
+  }
+  const result = await withPmsScope(request.scope, signal, boundSignal => handler(request, boundSignal));
   signal?.throwIfAborted();
   return result;
 }

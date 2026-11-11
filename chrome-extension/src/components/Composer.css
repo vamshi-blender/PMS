@@ -129,6 +129,40 @@
   transform: translate(0, 0);
 }
 
+.composer-leading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Context window usage ring; its tooltip is anchored left so it grows rightward. */
+.composer-context {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  flex-shrink: 0;
+  color: var(--text-primary);
+  cursor: default;
+}
+.composer-context svg { transform: rotate(-90deg); }
+.composer-context-track,
+.composer-context-fill {
+  fill: none;
+  stroke-width: 2;
+}
+.composer-context-track { stroke: var(--border-divider); }
+.composer-context-fill { stroke: currentColor; stroke-linecap: round; }
+.composer-context.composer-tooltip::after {
+  left: -8px;
+  transform: translate(0, 4px);
+}
+.composer-context.composer-tooltip:hover::after,
+.composer-context.composer-tooltip:focus-visible::after {
+  transform: translate(0, 0);
+}
+
 .composer-icon-btn {
   display: inline-flex;
   align-items: center;

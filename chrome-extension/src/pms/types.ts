@@ -89,6 +89,7 @@ export interface PmsCalendarSource {
 
 export interface PmsDailyWorklogsSource {
   kind: "dailyWorklogs";
+  rangeReportId: string;
   dataTableId: string;
   functionId: string;
   referencedElements: string[];
@@ -149,6 +150,9 @@ export interface PmsLookupFilter {
  * applied in the extension before rows reach the model, so it saves context
  * tokens on every lookup kind; filters additionally save the fetch itself. */
 export interface PmsLookupQuery {
+  fromDate?: string;
+  toDate?: string;
+  excludeWeekends?: boolean;
   newStatus?: string;
   details?: PmsTransitionDetail[];
   /** Attendance business date, YYYY-MM-DD in India. */
@@ -206,6 +210,8 @@ export type PmsRule =
   | { kind: "mustBeTrue"; field: string; message: string };
 
 export interface PmsActionManifest {
+  /** Verified production form contract; a changed form requires review. */
+  formHash?: string;
   title: string;
   description: string;
   appId: string;
@@ -226,6 +232,7 @@ export interface PmsActionManifest {
 
 export interface PmsBundle {
   version: number;
+  environment: "staging" | "production";
   lookups: Record<string, PmsLookupDefinition>;
   actions: Record<string, PmsActionManifest>;
 }

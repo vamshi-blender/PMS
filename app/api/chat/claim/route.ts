@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import { claimPendingRun, getPendingRun } from "@/lib/agents/pending-runs";
+import { pmsScopeSchema, samePmsScope } from "@/shared/pms-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-const schema = z.object({ runId: z.string().uuid(), toolCallId: z.string().min(1).max(300) }).strict();
+const schema = z.object({ runId: z.string().uuid(), toolCallId: z.string().min(1).max(300),
+  scope: pmsScopeSchema, conversationId: z.string().min(1).max(200), argumentsHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
 
 export function OPTIONS(request: Request) {
   const origin = getAllowedOrigin(request);
@@ -23,6 +26,10 @@ export async function POST(request: Request) {
   request.signal.throwIfAborted();
   const pending = getPendingRun(parsed.data.runId, parsed.data.toolCallId);
   if (!pending) return Response.json({ error: "This tool request expired or was already handled." }, { status: 410, headers });
+  if (!pending.context?.scope || !samePmsScope(pending.context.scope, parsed.data.scope) ||
+      pending.conversationId !== parsed.data.conversationId || pending.argumentsHash !== parsed.data.argumentsHash) {
+    return Response.json({ error: "Approval environment, user, conversation or inputs changed. Start a new request." }, { status: 409, headers });
+  }
   if (pending.executor !== "client") return Response.json({ error: "This tool runs on the server." }, { status: 409, headers });
   const claimId = claimPendingRun(parsed.data.runId, parsed.data.toolCallId);
   if (!claimId) return Response.json({ error: "This action is already being handled. Check its result before trying again." }, { status: 409, headers });

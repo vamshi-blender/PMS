@@ -1,4 +1,6 @@
 import { parseTransitionDetails, prepareStatusChange } from "./status-change";
+import { pmsFormHash } from "../../../shared/pms-form-contract";
+import { attendanceHours, endOfIndiaDate, indiaWorklogDate, isWeekend, lookupDateRange, offsetDate, summarizeDates } from "./date-range";
 // The PMS engine runs server-hosted manifests with supported calculation
 // strategies for leave and worklogs. Fields, source IDs, and payload templates
 // come from the bundle. It validates inputs, runs the declared
@@ -25,10 +27,12 @@ import {
   fetchIssueWorklogs,
   fetchDailyWorklogs,
   fetchAttendanceReport,
+  fetchWorklogRange,
   fetchDatasourceRows,
   fetchNextSerialNumber,
   fetchReportGrid,
   saveAppData,
+  postJson,
   type QuixyReportFilter,
 } from "./primitives";
 import type {
@@ -215,51 +219,66 @@ async function runLookupSource(
   }
 
   if (source.kind === "attendanceReport") {
-    if (!query?.date) throw new Error("getMyAttendance requires date as YYYY-MM-DD (India).");
-    parseInputDate(query.date);
-    const date = query.date.trim();
+    const range = lookupDateRange(query, "date");
     const user = context.user as Record<string, string>;
-    const page = await fetchAttendanceReport(source.reportId, date, signal);
+    const page = await fetchAttendanceReport(source.reportId, range.fromDate, signal, range.toDate);
+    const seen = new Set<string>();
     for (const row of page.rows) {
-      if (row.Date !== date || row["Employee Code"] !== user.employeeCode) {
+      if (typeof row.Date !== "string" || row.Date < range.fromDate || row.Date > range.toDate || row["Employee Code"] !== user.employeeCode) {
         throw new Error("PMS returned attendance for a different date or employee; no record can be reported.");
       }
+      parseInputDate(row.Date);
+      if (seen.has(row.Date)) throw new Error("PMS returned duplicate attendance dates; no totals can be reported.");
+      seen.add(row.Date);
       for (const field of ["In Time", "Out Time", "Total Hours", "Status"]) {
         if (row[field] !== null && row[field] !== undefined && typeof row[field] !== "string") {
           throw new Error("PMS returned invalid attendance values.");
         }
       }
     }
+    const rows = page.rows.filter(row => !range.excludeWeekends || !isWeekend(String(row.Date)));
+    const summary = summarizeDates(range, rows.map(row => ({ date: String(row.Date), hours: attendanceHours(row["Total Hours"]) })), true);
     return {
-      date, timeZone: "Asia/Kolkata", recordFound: page.rows.length > 0,
-      entryCount: page.total ?? page.rows.length,
-      rows: page.rows.slice(0, rowCap).map(row => projectColumns(row, columns?.length ? columns : source.availableColumns)),
-      truncated: (page.total ?? page.rows.length) > Math.min(rowCap, page.rows.length) || page.rows.length >= 100,
+      ...(query?.date ? { date: range.fromDate } : {}), ...range, timeZone: "Asia/Kolkata", recordFound: rows.length > 0,
+      entryCount: rows.length, excludedEntryCount: page.rows.length - rows.length,
+      ...summary,
+      rows: rows.slice(0, rowCap).map(row => projectColumns(row, columns?.length ? columns : source.availableColumns)),
+      truncated: rows.length > rowCap, summariesComplete: true,
     };
   }
 
   if (source.kind === "dailyWorklogs") {
-    if (!query?.logDate) throw new Error("getMyWorklogs requires logDate in YYYY-MM-DD (India).");
-    const date = quixyUtcDate(parseInputDate(query.logDate));
+    const range = lookupDateRange(query, "logDate");
+    const date = quixyUtcDate(parseInputDate(range.fromDate));
     const user = context.user as Record<string, string>;
-    const rows = await fetchDailyWorklogs(source, user.emailId, date, signal);
-    let totalHours = 0;
-    for (const row of rows) {
+    const fetched = query?.logDate ? await fetchDailyWorklogs(source, user.emailId, date, signal)
+      : (await fetchWorklogRange(source.rangeReportId, date, endOfIndiaDate(range.toDate), signal)).rows;
+    // The report filters stored UTC calendar dates, including the entire end
+    // date. Permit only that one-day boundary spill, then trim in India time.
+    const earliest = query?.logDate ? range.fromDate : offsetDate(range.fromDate, -1);
+    const latest = query?.logDate ? range.toDate : offsetDate(range.toDate, 1);
+    for (const row of fetched) {
       const hours = row["Worklog Hours"];
-      const rowDate = String(row["Worklog Date"] ?? "");
-      if (rowDate.slice(0, 19) !== date.slice(0, 19) ||
+      const rowDate = indiaWorklogDate(row["Worklog Date"]);
+      if (rowDate < earliest || rowDate > latest ||
+          (!query?.logDate && (typeof row["Email Id"] !== "string" || row["Email Id"].toLowerCase() !== user.emailId.toLowerCase())) ||
           (typeof hours !== "number" && (typeof hours !== "string" || !/^\d+(\.\d+)?$/.test(hours))) ||
           !Number.isFinite(Number(hours)) || Number(hours) < 0) {
         throw new Error("PMS returned an invalid date or hours; the daily total is unavailable.");
       }
-      totalHours += Number(hours);
     }
-    if (!Number.isFinite(totalHours)) throw new Error("PMS returned invalid daily hours.");
+    const inRange = fetched.filter(row => {
+      const date = indiaWorklogDate(row["Worklog Date"]);
+      return date >= range.fromDate && date <= range.toDate;
+    });
+    const rows = inRange.filter(row => !range.excludeWeekends || !isWeekend(indiaWorklogDate(row["Worklog Date"])));
+    const summary = summarizeDates(range, rows.map(row => ({ date: indiaWorklogDate(row["Worklog Date"]), hours: Number(row["Worklog Hours"]) })), false);
+    if (!Number.isFinite(summary.totalHours)) throw new Error("PMS returned invalid daily hours.");
     return {
-      logDate: query.logDate, timeZone: "Asia/Kolkata",
-      totalHours: Math.round(totalHours * 1e8) / 1e8, entryCount: rows.length,
+      ...(query?.logDate ? { logDate: range.fromDate } : {}), ...range, timeZone: "Asia/Kolkata",
+      ...summary, entryCount: rows.length, excludedEntryCount: inRange.length - rows.length,
       rows: rows.slice(0, rowCap).map(row => projectColumns(row, columns?.length ? columns : source.availableColumns)),
-      truncated: rows.length > rowCap,
+      truncated: rows.length > rowCap, summariesComplete: true,
     };
   }
 
@@ -340,6 +359,10 @@ export async function runPmsLookup(
   }
   if (query?.logDate !== undefined && lookup.source.kind !== "dailyWorklogs") {
     throw new Error("This lookup does not accept logDate.");
+  }
+  if ((query?.fromDate !== undefined || query?.toDate !== undefined || query?.excludeWeekends !== undefined) &&
+      lookup.source.kind !== "attendanceReport" && lookup.source.kind !== "dailyWorklogs") {
+    throw new Error("This lookup does not accept date-range parameters.");
   }
   const context: ExecutionContext = { user: await buildUserContext(signal), input: { issueId: query?.issueId } };
   return runLookupSource(lookup.source, context, query, signal);
@@ -515,6 +538,18 @@ export async function executePmsAction(
   applyInputRules(manifest.rules, inputs);
 
   const user = await buildUserContext(signal);
+  let productionForm: Record<string, unknown> | undefined;
+  if (bundle.environment === "production") {
+    const form = await postJson("/api/App/GetAppWithPermissions", {
+      appId: manifest.appId, currentStep: 0, emailId: user.emailId, initiatorEmailId: "", ignoreAccess: false,
+      groupNumber: 0, roleName: "", managerType: "", isView: false, nextGroupName: "", isReportView: "",
+    }, signal) as Record<string, unknown>;
+    if (form.IsDisabled === true || form.IsDeleted === true || !manifest.formHash ||
+        await pmsFormHash(form) !== manifest.formHash || form.OrganizationId !== user.organizationId) {
+      throw new Error("The production PMS form changed or is not available to this user. Complete it in PMS until Donna's configuration is reviewed.");
+    }
+    productionForm = form;
+  }
   const context: ExecutionContext = { input: inputs, user };
   const isStatusChange = manifest.derive === "statusChange";
   let statusValues: Record<string, unknown> | undefined;
@@ -550,6 +585,41 @@ export async function executePmsAction(
     ? deriveWorklog(inputs, context.calendar as WorklogCalendar)
     : buildDeriveNamespace(inputs, user));
   context.derive = derive;
+
+  if (productionForm && manifest.derive !== "worklog" && manifest.derive !== "statusChange") {
+    const elements = (productionForm.AppSections as { AppElements: Record<string, unknown>[] }[]).flatMap(section => section.AppElements);
+    const reference = elements.find(element => element.FieldName === "EmployeeId unblock")?.DataSourceReference as
+      { DataSourceId: string; DataSourceReferenceId: string; ReferencedElements: string } | undefined;
+    if (!reference) throw new Error("Production leave validation reference is unavailable.");
+    const data = await postJson("/api/Datasource/GetReferencedDataSourceData", {
+      DataSourceId: reference.DataSourceId, DataSourceReferenceId: reference.DataSourceReferenceId,
+      OutputColumns: reference.ReferencedElements,
+      DataSourceReferenceConditions: [
+        { DataSourceCollectionConditionLabelName: "EmployeeId", IsFocused: false, Value: user.employeeCode },
+        { DataSourceCollectionConditionLabelName: "Fromdate", IsFocused: false, Value: derive.fromUtc },
+        { DataSourceCollectionConditionLabelName: "Todate", IsFocused: true, Value: derive.toUtc },
+      ],
+    }, signal);
+    if (!Array.isArray(data) || data.some(row => !Array.isArray(row) || row.some(cell => typeof cell?.Name !== "string"))) {
+      throw new Error("Production leave date validation failed.");
+    }
+    const seen = new Set<string>();
+    const rows = data.map(row => {
+      const values: Record<string, unknown> = Object.fromEntries(row.map((cell: { Name: string; Value: unknown }) => [cell.Name, cell.Value]));
+      const date = String(values.Date ?? "").slice(0, 10);
+      if (date < String(inputs.fromDate) || date > String(inputs.toDate) || seen.has(date)) throw new Error("Production returned invalid leave dates.");
+      seen.add(date);
+      const indiaToday = parseInputDate(new Date(Date.now() + 19_800_000).toISOString().slice(0, 10));
+      const days = rawDayCount(parseInputDate(date), indiaToday) - 1;
+      const unblocked = values.Autogenerate !== undefined && values.Autogenerate !== null && String(values.Autogenerate).trim() !== "";
+      if (days > 7 && !unblocked) throw new Error("Leave can only be applied within seven days of the availed date. Contact Manager/HR for unblocking.");
+      return { ...values, "Day Diff": days, Status: unblocked ? "Unblocked" : "Enabled" };
+    });
+    if (rows.length !== rawDayCount(parseInputDate(String(inputs.fromDate)), parseInputDate(String(inputs.toDate)))) {
+      throw new Error("Production returned incomplete leave date validation.");
+    }
+    derive.productionLeaveValidationGrid = rows;
+  }
 
   applyDataRules(manifest.rules, inputs, derive.effectiveDays as number, context);
 

@@ -1,3 +1,5 @@
+import type { PmsEnvironment } from "./pmsEnvironment";
+import type { PmsScope } from "../../../shared/pms-scope";
 import type {
   AgentToolStatus,
   AgentWorkItem,
@@ -256,13 +258,35 @@ function migrateLegacyChat(value: unknown): StoredChatStore | null {
   return { activeChatId: chat.id, chats: [chat] };
 }
 
-export async function loadChatStore(): Promise<StoredChatStore> {
+export async function loadChatStore(environment: PmsEnvironment = "staging", owner?: Pick<PmsScope, "userId" | "organizationId">): Promise<StoredChatStore> {
+  // Existing unscoped chats were all staging chats. Keep that key for staging
+  // so upgrades preserve history without copying it into production.
+  const legacyKey = environment === "staging" ? CHAT_STORE_KEY : `${CHAT_STORE_KEY}:production`;
+  const key = owner ? `${legacyKey}:${encodeURIComponent(owner.organizationId)}:${encodeURIComponent(owner.userId)}` : legacyKey;
+  if (owner) {
+    const records = await chrome.storage.local.get([key, legacyKey, `${legacyKey}:owner`]);
+    const current = restoreStore(records[key]);
+    if (current) return current;
+    // Claim existing environment history for its first signed-in owner once.
+    const claimed = records[`${legacyKey}:owner`];
+    const ownerKey = `${owner.organizationId}:${owner.userId}`;
+    if (!claimed || claimed === ownerKey) {
+      const legacy = restoreStore(records[legacyKey]) ?? await loadChatStore(environment);
+      if (legacy.chats.length || records[legacyKey]) {
+        await chrome.storage.local.set({ [key]: legacy, [`${legacyKey}:owner`]: ownerKey });
+        return legacy;
+      }
+    }
+    return { activeChatId: null, chats: [] };
+  }
   const stored = await chrome.storage.local.get([
-    CHAT_STORE_KEY,
+    key,
     LEGACY_CURRENT_CHAT_KEY,
   ]);
-  const current = restoreStore(stored[CHAT_STORE_KEY]);
+  const current = restoreStore(stored[key]);
   if (current) return current;
+
+  if (environment !== "staging") return { activeChatId: null, chats: [] };
 
   const migrated = migrateLegacyChat(stored[LEGACY_CURRENT_CHAT_KEY]);
   if (migrated) {
@@ -274,6 +298,8 @@ export async function loadChatStore(): Promise<StoredChatStore> {
   return { ...EMPTY_CHAT_STORE };
 }
 
-export async function saveChatStore(store: StoredChatStore) {
-  await chrome.storage.local.set({ [CHAT_STORE_KEY]: store });
+export async function saveChatStore(store: StoredChatStore, environment: PmsEnvironment = "staging", owner?: Pick<PmsScope, "userId" | "organizationId">) {
+  const prefix = environment === "staging" ? CHAT_STORE_KEY : `${CHAT_STORE_KEY}:production`;
+  const key = owner ? `${prefix}:${encodeURIComponent(owner.organizationId)}:${encodeURIComponent(owner.userId)}` : prefix;
+  await chrome.storage.local.set({ [key]: store });
 }

@@ -168,9 +168,10 @@ export interface ReportPage {
   total?: number;
 }
 
-function reportPage(value: unknown): ReportPage {
-  const data = value as { Status?: unknown; results?: unknown; __count?: unknown };
-  if (data?.Status !== true || typeof data.results !== "string") {
+function reportPage(value: unknown, allowFalseStatus = false): ReportPage {
+  const data = value as { Status?: unknown; results?: unknown; __count?: unknown; errorMessage?: unknown; ErrorMessage?: unknown };
+  if ((data?.Status !== true && !(allowFalseStatus && data?.Status === false)) ||
+      data.errorMessage || data.ErrorMessage || typeof data.results !== "string") {
     throw new Error("PMS returned an invalid report response.");
   }
   const rows: unknown = JSON.parse(data.results);
@@ -209,36 +210,54 @@ export async function fetchIssueWorklogs(
     ReportId: reportId, UserId: userId,
     ListScreenReportFilters: [{ DataSourceCollectionConditionLabelName: "Issue Id", Value: issueId }],
     skip: 0, take: 100, IsFromReportMappingDrillDown: false, IsChartBasedReportGridCall: false,
-  }, signal));
+  // Production returns Status=false with valid rows, as attendance does.
+  // Keep issue searches strict; only this verified report accepts the flag.
+  }, signal), true);
 }
 
 /** Attendance dates are literal business dates, not shifted Quixy datetimes.
  * Verified: shifting April 2 to April 1 18:30 returns both days. */
 export async function fetchAttendanceReport(
-  reportId: string, date: string, signal?: AbortSignal,
+  reportId: string, date: string, signal?: AbortSignal, toDate = date,
 ): Promise<ReportPage> {
-  const data = await postJson("/api/Report/GetGridReportData", {
-    reportId, skip: 0, top: 100, orderByFields: "Date desc",
-    filters: [{
-      ElementType: "Date", LabelName: "Date", Condition: "Custom", Type: "textType",
-      DefaultValue: date, SecondValue: date, MappingType: "Mapped",
-    }],
-    groupAggregate: null, isShowGrid: false, isChartBasedReportGridCall: false,
-  }, signal) as { results?: unknown; errorMessage?: unknown; ErrorMessage?: unknown; __count?: unknown };
-  // This report sets Status=false even when it returns valid rows; use the
-  // actual error/rows contract instead of treating that flag as failure.
-  if (data?.errorMessage || data?.ErrorMessage || typeof data?.results !== "string") {
-    throw new Error("PMS could not retrieve attendance. Please try again.");
+  return fetchDateRangeReport(reportId, "Date", date, toDate, "Date desc", signal);
+}
+
+/** Worklog report dates use Quixy's shifted UTC representation. This differs
+ * from the date-only attendance filter. Empty ordering is the verified report
+ * default; unescaped column names containing spaces silently return no rows. */
+export async function fetchWorklogRange(reportId: string, fromUtc: string, toUtc: string, signal?: AbortSignal): Promise<ReportPage> {
+  return fetchDateRangeReport(reportId, "Worklog Date", fromUtc, toUtc, "", signal);
+}
+
+async function fetchDateRangeReport(reportId: string, label: string, fromDate: string, toDate: string, orderByFields: string, signal?: AbortSignal): Promise<ReportPage> {
+  const rows: Record<string, unknown>[] = [];
+  let expectedTotal: number | undefined;
+  const pageSize = 500;
+  for (let skip = 0; skip < 5000; skip += pageSize) {
+    const data = await postJson("/api/Report/GetGridReportData", {
+      reportId, skip, top: pageSize, orderByFields,
+      filters: [{ ElementType: "Date", LabelName: label, Condition: "Custom", Type: "textType",
+        DefaultValue: fromDate, SecondValue: toDate, MappingType: "Mapped" }],
+      groupAggregate: null, isShowGrid: false, isChartBasedReportGridCall: false,
+    }, signal) as { results?: unknown; errorMessage?: unknown; ErrorMessage?: unknown; __count?: unknown };
+    // Both verified reports set Status=false even when their rows are valid.
+    if (data?.errorMessage || data?.ErrorMessage || typeof data?.results !== "string") throw new Error("PMS could not retrieve the date-range report.");
+    let page: unknown;
+    try { page = JSON.parse(data.results); } catch { throw new Error("PMS returned invalid report data."); }
+    if (!Array.isArray(page) || page.some(row => !row || typeof row !== "object" || Array.isArray(row))) throw new Error("PMS returned invalid report rows.");
+    const total = data.__count;
+    if (total !== undefined && (typeof total !== "number" || !Number.isInteger(total) || total < 0)) throw new Error("PMS returned an invalid report count.");
+    if (typeof total === "number") {
+      if (expectedTotal !== undefined && total !== expectedTotal) throw new Error("PMS report changed during retrieval. Try again.");
+      expectedTotal = total;
+    }
+    rows.push(...page as Record<string, unknown>[]);
+    if (expectedTotal !== undefined && rows.length > expectedTotal) throw new Error("PMS returned inconsistent report rows.");
+    if (expectedTotal === rows.length || (expectedTotal === undefined && page.length < pageSize)) return { rows, total: rows.length };
+    if (page.length !== pageSize) throw new Error("PMS returned incomplete report data; no totals can be reported.");
   }
-  let rows: unknown;
-  try { rows = JSON.parse(data.results); } catch { throw new Error("PMS returned invalid attendance data."); }
-  if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
-    throw new Error("PMS returned invalid attendance rows.");
-  }
-  const total = typeof data.__count === "number" && Number.isFinite(data.__count) && data.__count >= 0
-    ? data.__count : undefined;
-  if (!rows.length && total && total > 0) throw new Error("PMS returned incomplete attendance data.");
-  return { rows, total };
+  throw new Error("Too many report entries. Use a shorter date range.");
 }
 
 /** All rows for one employee/date; unlike fetchDataTableRow, do not take only row 0. */
