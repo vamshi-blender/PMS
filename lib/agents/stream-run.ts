@@ -174,6 +174,14 @@ function approvalPresentation(args: Record<string, unknown>): {
     const fields = args.fields as Record<string, unknown>;
     description = `${fields.issueId}: ${fields.issueSummary}\n${fields.logDate}; ${fields.category}; ${fields.logHours} hours (${fields.billableHours ?? fields.logHours} billable)\n${fields.description}`;
   }
+  if (args.actionName === "change_issue_status" && args.fields && typeof args.fields === "object") {
+    const fields = args.fields as Record<string, unknown>;
+    const details = Array.isArray(fields.details) ? fields.details.map(item => {
+      const detail = item as { field: string; value: string | null; values: string[] | null };
+      return `${detail.field}: ${detail.values?.join(", ") ?? detail.value}`;
+    }).join("; ") : "";
+    description = `${fields.issueId}: ${fields.issueSummary}\n${fields.currentStatus} to ${fields.newStatus}${details ? "\n" + details : ""}`;
+  }
   const confirmLabel = CONFIRM_LABELS.includes(args.confirmLabel as ConfirmLabel)
     ? (args.confirmLabel as ConfirmLabel)
     : "Allow";

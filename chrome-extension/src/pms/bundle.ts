@@ -7,7 +7,7 @@ import { getBackendUrl } from "../api/backend";
 import type { PmsBundle } from "./types";
 
 const BUNDLE_CACHE_KEY = "donnaPmsBundle";
-const SUPPORTED_BUNDLE_VERSION = 4;
+const SUPPORTED_BUNDLE_VERSION = 5;
 
 function isUsableBundle(value: unknown): value is PmsBundle {
   if (!value || typeof value !== "object") return false;

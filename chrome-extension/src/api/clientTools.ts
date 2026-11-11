@@ -1,3 +1,4 @@
+import { parseTransitionDetails } from "../pms/status-change";
 import { executePmsAction, runPmsLookup } from "../pms/executor";
 import type { PmsLookupFilter, PmsLookupQuery } from "../pms/types";
 import type { ToolApprovalRequest } from "./protocol";
@@ -70,6 +71,11 @@ const LOOKUP_OPERATORS = ["equals", "contains", "between"] as const;
  * names against the manifest, so this only guards the value shapes. */
 function parseLookupQuery(args: Record<string, unknown>): PmsLookupQuery {
   const query: PmsLookupQuery = {};
+  if (args.newStatus !== undefined && args.newStatus !== null) {
+    if (typeof args.newStatus !== "string") throw new Error("Invalid target status.");
+    query.newStatus = args.newStatus;
+  }
+  if (args.details !== undefined && args.details !== null) query.details = parseTransitionDetails(args.details);
   if (args.date !== undefined && args.date !== null) {
     if (typeof args.date !== "string") throw new Error("Invalid attendance date.");
     query.date = args.date;

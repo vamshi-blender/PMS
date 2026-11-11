@@ -101,6 +101,19 @@ export interface PmsAttendanceSource {
   availableColumns: string[];
 }
 
+export interface PmsIssueTransitionsSource {
+  kind: "issueTransitions";
+  detailFields: string[];
+  viewId: string;
+  appId: string;
+}
+
+export interface PmsTransitionDetail {
+  field: string;
+  value: string | null;
+  values: string[] | null;
+}
+
 export type PmsLookupSource =
   | PmsDataTableRowSource
   | PmsDatasourceRowsSource
@@ -110,7 +123,8 @@ export type PmsLookupSource =
   | PmsWorklogReportSource
   | PmsCalendarSource
   | PmsDailyWorklogsSource
-  | PmsAttendanceSource;
+  | PmsAttendanceSource
+  | PmsIssueTransitionsSource;
 
 export interface PmsLookupDefinition {
   description: string;
@@ -135,6 +149,8 @@ export interface PmsLookupFilter {
  * applied in the extension before rows reach the model, so it saves context
  * tokens on every lookup kind; filters additionally save the fetch itself. */
 export interface PmsLookupQuery {
+  newStatus?: string;
+  details?: PmsTransitionDetail[];
   /** Attendance business date, YYYY-MM-DD in India. */
   date?: string;
   /** Full issue ID or unique numeric suffix; used only by issue lookups. */
@@ -150,7 +166,7 @@ export interface PmsLookupQuery {
 export interface PmsInputSlot {
   name: string;
   label: string;
-  type: "enum" | "date" | "string" | "boolean";
+  type: "enum" | "date" | "string" | "boolean" | "details";
   options?: string[];
   required: boolean;
   maxLength?: number;
@@ -197,7 +213,7 @@ export interface PmsActionManifest {
   /** GET /api/App/GetNextSerialNumber parameter. */
   serialAppElementId?: string;
   /** Selects the supported computed-field strategy. */
-  derive?: "leave" | "worklog";
+  derive?: "leave" | "worklog" | "statusChange";
   /** Execution resolvers: context namespace → lookup name in the bundle. */
   resolvers: Record<string, string>;
   inputs: PmsInputSlot[];

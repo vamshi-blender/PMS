@@ -79,10 +79,13 @@ const pmsLookupParameters = z
       "getIssueWorklogs",
       "getMyWorklogs",
       "getMyAttendance",
+      "getAllowedIssueStatuses",
     ]),
+    newStatus: z.string().nullable().describe("Desired status for getAllowedIssueStatuses, null to list transitions or for other lookups."),
+    details: z.array(z.object({ field: z.string(), value: z.string().nullable(), values: z.array(z.string()).nullable() }).strict()).nullable(),
     date: z.string().nullable().describe("Required for getMyAttendance: India YYYY-MM-DD from hidden context. null otherwise."),
     logDate: z.string().nullable().describe("Required for getMyWorklogs: India YYYY-MM-DD; resolve relative dates using the hidden donna_context timestamp. null otherwise."),
-    issueId: z.string().nullable().describe("Required for getIssueContext and getIssueWorklogs; preserve the exact user-supplied prefix. null for other lookups."),
+    issueId: z.string().nullable().describe("Required for getIssueContext, getIssueWorklogs and getAllowedIssueStatuses; preserve the exact user-supplied prefix. null for other lookups."),
     filters: z
       .array(pmsLookupFilterParameters)
       .nullable()

@@ -15,7 +15,7 @@ export function normalizeIssueId(value: unknown, requireFull = false): string {
 
 /** Contains discovers candidates; only exact IDs or exact numeric suffixes may match.
  * Read all candidate pages before accepting a number, so ambiguity fails closed. */
-export async function resolveIssue(viewId: string, value: unknown, signal?: AbortSignal) {
+export async function resolveIssue(viewId: string, value: unknown, signal?: AbortSignal, extraFields: string[] = []) {
   const id = normalizeIssueId(value);
   const numeric = /^\d+$/.test(id);
   const candidates: Record<string, unknown>[] = [];
@@ -45,7 +45,11 @@ export async function resolveIssue(viewId: string, value: unknown, signal?: Abor
       throw new Error(`PMS issue is missing "${field}". No worklog was submitted.`);
     }
   }
-  return Object.fromEntries(ISSUE_FIELDS.map(field => [field, String(row[field])]));
+  const resolved: Record<string, string> = Object.fromEntries(ISSUE_FIELDS.map(field => [field, String(row[field])]));
+  // Status enriches the lookup but is not a prerequisite for adding a worklog.
+  resolved.Status = typeof row.Status === "string" ? row.Status : "";
+  for (const field of extraFields) resolved[field] = row[field] === undefined || row[field] === null ? "" : String(row[field]);
+  return resolved;
 }
 
 export async function fetchCategoryLabels(lookupTypeId: string, signal?: AbortSignal) {

@@ -2,7 +2,7 @@
 import type { PmsActionManifest, PmsLookupDefinition } from "../types";
 
 const VIEW_ID = "05072022-184836479-5888ab5b-d645-4e86-a937-f2d02d2414c1";
-const ISSUE_COLUMNS = ["Issue Id", "Project Id", "Record Id", "Issue Type", "Assignee", "Summary"];
+const ISSUE_COLUMNS = ["Issue Id", "Project Id", "Record Id", "Issue Type", "Assignee", "Summary", "Status"];
 export const worklogLookups: Record<string, PmsLookupDefinition> = {
   getMyWorklogs: {
     description: "Your worklogs across ALL issues for an India calendar date. Pass logDate as YYYY-MM-DD. Returns totalHours and entryCount computed over every returned entry, plus a capped detail list. Uses the logged-in user's email automatically.",
@@ -16,7 +16,7 @@ export const worklogLookups: Record<string, PmsLookupDefinition> = {
     },
   },
   getIssueContext: {
-    description: "Resolve an exact full issue ID or a unique numeric suffix. Full prefixes must match exactly; never substitute a different prefix. Returns canonical Issue Id, Summary, Project Id, Record Id, Issue Type and Assignee. Pass issueId.",
+    description: "Resolve an exact full issue ID or a unique numeric suffix. Full prefixes must match exactly; never substitute a different prefix. Returns canonical Issue Id, Summary, Project Id, Record Id, Issue Type, Assignee and Status (empty if unavailable). Pass issueId.",
     queryable: true,
     source: { kind: "issueContext", viewId: VIEW_ID, keyRef: "input.issueId", availableColumns: ISSUE_COLUMNS },
   },

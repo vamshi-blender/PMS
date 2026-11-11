@@ -12,7 +12,7 @@ import type {
 
 type NameValue = { Name?: unknown; Value?: unknown };
 
-async function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+export async function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
   const response = await pmsFetch(path, {
     method: "POST",
     signal,
@@ -190,7 +190,7 @@ export async function fetchIssueCandidates(
   return reportPage(await postJson(`/api/Report/GetViewResult?${query}`, {
     orderByFields: "",
     filters: {
-      searchString: "", columns: "Issue Id,Summary,Issue Type,Assignee,Project Name",
+      searchString: "", columns: "Issue Id,Summary,Issue Type,Assignee,Project Name,Status",
       groupedColumns: "", columnsOrder: "", resizedColumns: [], pageSize: 100,
       filters: [], sorting: [],
       CustomUserViewFilters: [{

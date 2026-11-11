@@ -1,3 +1,4 @@
+import { parseTransitionDetails, prepareStatusChange } from "./status-change";
 // The PMS engine runs server-hosted manifests with supported calculation
 // strategies for leave and worklogs. Fields, source IDs, and payload templates
 // come from the bundle. It validates inputs, runs the declared
@@ -208,6 +209,11 @@ async function runLookupSource(
   }
   const rowCap = Math.min(query?.top ?? MAX_LOOKUP_ROWS, MAX_LOOKUP_ROWS);
 
+  if (source.kind === "issueTransitions") {
+    const user = context.user as Record<string, string>;
+    return (await prepareStatusChange(source, { issueId: query?.issueId, newStatus: query?.newStatus, details: query?.details }, user, signal)).publicResult;
+  }
+
   if (source.kind === "attendanceReport") {
     if (!query?.date) throw new Error("getMyAttendance requires date as YYYY-MM-DD (India).");
     parseInputDate(query.date);
@@ -323,8 +329,11 @@ export async function runPmsLookup(
   if (!lookup || !lookup.queryable) {
     throw new Error(`"${lookupName}" is not an available PMS lookup.`);
   }
-  if (query?.issueId !== undefined && lookup.source.kind !== "issueContext" && lookup.source.kind !== "worklogReport") {
+  if (query?.issueId !== undefined && lookup.source.kind !== "issueContext" && lookup.source.kind !== "worklogReport" && lookup.source.kind !== "issueTransitions") {
     throw new Error("This lookup does not accept issueId.");
+  }
+  if ((query?.newStatus !== undefined || query?.details !== undefined) && lookup.source.kind !== "issueTransitions") {
+    throw new Error("This lookup does not accept transition parameters.");
   }
   if (query?.date !== undefined && lookup.source.kind !== "attendanceReport") {
     throw new Error("This lookup does not accept date.");
@@ -354,6 +363,11 @@ function validateInputs(
     const empty = value === undefined || value === null || value === "";
     if (empty) {
       if (slot.required) throw new Error(`Missing required input "${slot.name}".`);
+      continue;
+    }
+    if (slot.type === "details") {
+      const details = parseTransitionDetails(value);
+      if (details.some(detail => !slot.options?.includes(detail.field))) throw new Error("Unknown transition detail field.");
       continue;
     }
     if (slot.type === "boolean") {
@@ -502,9 +516,18 @@ export async function executePmsAction(
 
   const user = await buildUserContext(signal);
   const context: ExecutionContext = { input: inputs, user };
+  const isStatusChange = manifest.derive === "statusChange";
+  let statusValues: Record<string, unknown> | undefined;
+  if (isStatusChange) {
+    const source = bundle.lookups[manifest.resolvers.transition]?.source;
+    if (source?.kind !== "issueTransitions") throw new Error("Status transition resolver is unavailable.");
+    const prepared = await prepareStatusChange(source, inputs, user, signal, true);
+    context.issue = prepared.context.issue;
+    statusValues = prepared.values;
+  }
 
   // Execution resolvers, namespaced as the manifest declares.
-  for (const [namespace, lookupName] of Object.entries(manifest.resolvers)) {
+  for (const [namespace, lookupName] of Object.entries(isStatusChange ? {} : manifest.resolvers)) {
     const lookup = bundle.lookups[lookupName];
     if (!lookup) {
       throw new Error(`PMS manifest references unknown lookup "${lookupName}".`);
@@ -523,9 +546,9 @@ export async function executePmsAction(
       throw new Error("The category is not active. Look up worklog categories and request a new approval.");
     }
   }
-  const derive = isWorklog
+  const derive = statusValues ?? (isWorklog
     ? deriveWorklog(inputs, context.calendar as WorklogCalendar)
-    : buildDeriveNamespace(inputs, user);
+    : buildDeriveNamespace(inputs, user));
   context.derive = derive;
 
   applyDataRules(manifest.rules, inputs, derive.effectiveDays as number, context);
@@ -542,13 +565,25 @@ export async function executePmsAction(
     payload[key] = renderValue(spec, context);
   }
 
+  if (isStatusChange) {
+    const source = bundle.lookups[manifest.resolvers.transition]?.source;
+    if (source?.kind !== "issueTransitions") throw new Error("Missing status resolver.");
+    const latest = await resolveIssue(source.viewId, inputs.issueId, signal);
+    const approved = context.issue as Record<string, string>;
+    if (latest.Status !== inputs.currentStatus || latest.Summary !== inputs.issueSummary || latest["Record Id"] !== approved["Record Id"]) {
+      throw new Error("Issue changed while preparing the transition. Request a fresh approval.");
+    }
+  }
   signal?.throwIfAborted();
   const { appDataId } = await saveAppData(manifest.submitPath, payload, signal);
 
   return {
     recordId: context.serial ?? appDataId,
     appDataId,
-    summary: isWorklog ? {
+    summary: isStatusChange ? {
+      action: actionName, issueId: (context.issue as Record<string, string>)["Issue Id"],
+      issueSummary: inputs.issueSummary, previousStatus: inputs.currentStatus, status: inputs.newStatus,
+    } : isWorklog ? {
       action: actionName, issueId: (context.issue as Record<string, string>)["Issue Id"],
       issueSummary: inputs.issueSummary, category: inputs.category, logDate: inputs.logDate,
       logHours: inputs.logHours, billableHours: inputs.billableHours, status: "Completed",

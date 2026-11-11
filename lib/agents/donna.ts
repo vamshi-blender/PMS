@@ -1,8 +1,10 @@
+import { STATUS_DETAIL_FIELDS } from "../pms/manifests/change-issue-status";
 import { Agent, tool } from "@openai/agents";
 import { z } from "zod";
 import { actionNames, getPmsBundle, queryableLookupNames } from "../pms/bundle";
 import {
   actionFieldsShape,
+  transitionDetailsSchema,
   capabilitiesCatalog,
   lookupQuerySummary,
   queryableColumnNames,
@@ -143,6 +145,8 @@ const pmsLookupParameters = z
     lookup: z
       .enum(queryableLookupNames() as [string, ...string[]])
       .describe("Which PMS lookup to run."),
+    newStatus: z.string().nullable().describe("For getAllowedIssueStatuses: desired next status to inspect its requirements, or null to list transitions."),
+    details: transitionDetailsSchema(STATUS_DETAIL_FIELDS).nullable().describe("For getAllowedIssueStatuses: supplied transition details for conditional requirements, null otherwise."),
     date: z.string().nullable().describe("Required for getMyAttendance: YYYY-MM-DD in India; use the hidden donna_context timestamp for today/yesterday. null for other lookups."),
     logDate: z.string().nullable().describe("Required for getMyWorklogs: YYYY-MM-DD in India. Resolve today/yesterday using the hidden donna_context timestamp. null for other lookups."),
     issueId: z.string().nullable().describe("Required for getIssueContext and getIssueWorklogs: the issue ID exactly as supplied by the user, including any prefix. A number alone is allowed for unique resolution. null for other lookups."),
@@ -238,6 +242,7 @@ Use get_current_page_context only when the user's request depends on the active 
 PMS (the user's Quixy project-management system):
 Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates using the hidden donna_context timestamp.
 When a lookup can return many rows, pass filters (by status, leave type, dates, or application id) and columns so only the data the question needs is fetched — check list_pms_capabilities for each lookup's filterable fields, valid values, and column names.
+For changing issue status: use pms_lookup with getAllowedIssueStatuses and the user's exact issueId. Call it with newStatus and supplied details to discover visible fields, required fields, options and validationErrors. Collect only necessary or explicitly requested details; never invent lead confirmation, branches, RCA or file uploads. If requiresPmsForm is nonempty, direct the user to PMS. Do not call submit_pms_action until validationErrors are empty. Use canonical issueId, exact summary, currentStatus and newStatus from this lookup; preserve the user's explicit prefix. The extension rechecks fresh form rules and transitions after approval. Never bypass intermediate statuses or automatically retry uncertain writes. Confirm success with issue ID and new status, without internal IDs.
 For attendance and login/logout-time questions, use pms_lookup with lookup=getMyAttendance and date. Use the hidden context for relative dates. In Time is attendance login and Out Time is logout, already in local India display format. If no record is returned, say no attendance record was found for that date; do not claim the user was absent or did not log in. Never invent missing Out Time or Total Hours, and distinguish attendance hours from logged worklog hours.
 For questions about hours already logged today or on a specific day across all issues, use pms_lookup with lookup=getMyWorklogs and logDate. Resolve relative dates using the hidden donna_context timestamp. Report the returned totalHours and entryCount; do not treat a truncated detail list as the total, and do not sum issue-specific worklogs as if they were all of the user's worklogs.
 For worklogs: first use pms_lookup with lookup=getIssueContext and the user's exact issueId (never replace an explicit prefix), and lookup=getWorklogCategories. If the ID is missing, mismatched or ambiguous, stop and ask the user; never switch to a suggested ID without their correction. A numeric ID must resolve uniquely. Put the returned full Issue Id and exact Summary into issueId and issueSummary. Do not invent category labels or issue details. Billable hours default to log hours: do not ask for them separately. Pass billableHours as null unless the user explicitly gives billable hours, in which case preserve that value, including zero. Include full issue ID, summary, category, log date, log hours, billable hours and description in the approval. Only request a new approval after a changed issue/category is resolved. Never retry a submission automatically after an uncertain result.

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git --no-pager diff HEAD -- package.json)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npm view *)",
+      "Bash(npm install *)",
+      "Bash(npm uninstall *)",
+      "Bash(node inspect-xlsx.mjs)",
+      "Bash(rm -f /tmp/mdtest.mjs)",
+      "mcp__plugin_playwright_playwright__browser_snapshot",
+      "mcp__plugin_playwright_playwright__browser_click",
+      "mcp__plugin_playwright_playwright__browser_type",
+      "mcp__plugin_playwright_playwright__browser_network_requests",
+      "mcp__plugin_playwright_playwright__browser_network_request",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_wait_for",
+      "Bash(npx next *)",
+      "Bash(curl -s -m 5 \"http://localhost:3000/api/pms/manifests\")",
+      "Bash(npm run *)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

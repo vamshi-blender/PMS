@@ -9,6 +9,13 @@ import type { PmsInputSlot, PmsLookupSource } from "./types";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+export function transitionDetailsSchema(fields: string[]) {
+  return z.array(z.object({
+    field: z.enum(fields as [string, ...string[]]),
+    value: z.string().nullable(), values: z.array(z.string()).nullable(),
+  }).strict());
+}
+
 function slotSchema(slot: PmsInputSlot): z.ZodTypeAny {
   let schema: z.ZodTypeAny;
   switch (slot.type) {
@@ -17,6 +24,9 @@ function slotSchema(slot: PmsInputSlot): z.ZodTypeAny {
       break;
     case "date":
       schema = z.string().regex(DATE_PATTERN, "Expected YYYY-MM-DD");
+      break;
+    case "details":
+      schema = transitionDetailsSchema(slot.options ?? []);
       break;
     case "boolean":
       schema = z.boolean();
@@ -64,7 +74,7 @@ export function capabilitiesCatalog(): unknown {
     lookups: Object.entries(bundle.lookups)
       .filter(([, lookup]) => lookup.queryable)
       .map(([name, lookup]) => ({
-        parameters: lookup.source.kind === "issueContext" || lookup.source.kind === "worklogReport" ? { issueId: "Required: full issue ID or unique numeric suffix" } : lookup.source.kind === "dailyWorklogs" ? { logDate: "Required: YYYY-MM-DD in India; resolve relative dates using the hidden donna_context timestamp" } : lookup.source.kind === "attendanceReport" ? { date: "Required: YYYY-MM-DD in India" } : {},
+        parameters: lookup.source.kind === "issueContext" || lookup.source.kind === "worklogReport" || lookup.source.kind === "issueTransitions" ? { issueId: "Required: full issue ID or unique numeric suffix" } : lookup.source.kind === "dailyWorklogs" ? { logDate: "Required: YYYY-MM-DD in India; resolve relative dates using the hidden donna_context timestamp" } : lookup.source.kind === "attendanceReport" ? { date: "Required: YYYY-MM-DD in India" } : {},
         resolverName: name,
         description: lookup.description,
         ...lookupQueryCapabilities(lookup.source),

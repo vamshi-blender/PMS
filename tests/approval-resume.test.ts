@@ -58,6 +58,25 @@ async function resume(body: Record<string, unknown>) {
 }
 
 describe("approval checkpoints", () => {
+  it("shows the issue transition and supplied details before executing", async () => {
+    const model = new ScriptedModel([[functionCall("submit_pms_action", {
+      actionName: "change_issue_status", fields: {
+        issueId: "QKA-49715", issueSummary: "Team Cordination", currentStatus: "In Progress", newStatus: "Resolved",
+        details: [{ field: "Change Remarks", value: "Work complete", values: null }],
+      }, approvalTitle: "Change status?", approvalDescription: "Model summary", confirmLabel: "Allow",
+    }, { callId: "call-status" })], [assistantMessage("Changed status.")]]);
+    donnaAgent.model = model;
+    const response = new Response(streamDonnaRun({ input: "Resolve QKA-49715", conversationId: "conv-status", signal: new AbortController().signal }));
+    const events = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+    const approval = events.find(event => event.type === "tool_approval.request");
+    expect(approval.description).toContain("QKA-49715: Team Cordination");
+    expect(approval.description).toContain("In Progress to Resolved");
+    expect(approval.description).toContain("Change Remarks: Work complete");
+    expect(model.calls).toHaveLength(1);
+    const resumed = await resume({ runId: approval.runId, toolCallId: approval.toolCallId, approved: true, result: { status: "Resolved" } });
+    expect(await resumed.text()).toContain("response.completed");
+    model.assertComplete();
+  });
   it("claims a browser action once before execution and rejects other claim owners", async () => {
     const { approval } = await pause();
     const body = { runId: approval.runId, toolCallId: approval.toolCallId };
