@@ -43,3 +43,6 @@ next-env.d.ts
 
 .playwright-mcp/
 .claude/settings.json
+
+# tests are kept locally only
+/tests/

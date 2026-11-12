@@ -22,5 +22,9 @@
     "additionalDirectories": [
       "\\tmp"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "supabase"
+  ],
+  "enableAllProjectMcpServers": true
 }

@@ -5,6 +5,7 @@ import type { ToolApprovalRequest } from "./protocol";
 import { assertPmsScope } from "./pmsAuth";
 import { toolArgumentsHash, type PmsScope } from "../../../shared/pms-scope";
 import type { PmsEnvironment } from "./pmsEnvironment";
+import { currentUserProfile } from "./userProfile";
 
 async function approvalBinding(request: ToolApprovalRequest, signal: AbortSignal) {
   if (!request.scope || !request.conversationId || !request.argumentsHash ||
@@ -109,6 +110,7 @@ export async function streamChat(options: {
     headers: backendAuthHeaders(token, scope.environment),
     body: {
       message: options.message,
+      userProfile: currentUserProfile(scope),
       scope,
       ...(options.conversationId
         ? { conversationId: options.conversationId }

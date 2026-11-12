@@ -235,8 +235,9 @@ export function streamDonnaRun({
       try {
         abortController.signal.throwIfAborted();
         const isResumedRun = input instanceof RunState;
+        context.conversationId ??= conversationId;
         const result = await run(donnaAgent, typeof input === "string"
-          ? donnaPromptInput(input, context.scope?.environment) : input, {
+          ? donnaPromptInput(input, context.scope?.environment, context.userProfile) : input, {
           stream: true,
           signal: abortController.signal,
           maxTurns: 8,

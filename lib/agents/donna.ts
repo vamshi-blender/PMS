@@ -13,6 +13,9 @@ import {
 import { CONFIRM_LABELS } from "./protocol";
 import { PROMPT_CONTEXT_INSTRUCTIONS } from "../../shared/prompt-context";
 import type { PmsScope } from "../../shared/pms-scope";
+import type { PmsUserProfile } from "../pms/user-profile";
+import { memoryInstructions } from "../memory/prompt";
+import { MEMORY_INSTRUCTIONS, manageMemory } from "../memory/tool";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -23,6 +26,9 @@ export interface ClientToolResult {
 export interface DonnaRunContext {
   clientToolResults: Record<string, ClientToolResult>;
   scope?: PmsScope;
+  userProfile?: PmsUserProfile;
+  /** The chat this run belongs to; recorded as the source of saved memories. */
+  conversationId?: string;
 }
 
 // Every tool that needsApproval must include these fields in its parameters.
@@ -233,10 +239,9 @@ const listPmsCapabilities = tool({
   },
 });
 
-export const donnaAgent = new Agent<DonnaRunContext>({
-  name: "Donna",
-  model: process.env.OPENAI_MODEL ?? "gpt-5.6",
-  instructions: `You are Donna, a thoughtful personal AI assistant in a Chrome extension.
+// The fixed part of Donna's instructions. The per-user memory block is
+// appended on every model call (see donnaAgent.instructions).
+export const DONNA_BASE_INSTRUCTIONS = `You are Donna, a thoughtful personal AI assistant in a Chrome extension.
 
 Help the user clearly and directly. Keep answers concise unless the task benefits from detail.
 Remember and use relevant information from the current conversation.
@@ -261,11 +266,22 @@ The submission executes locally in the user's extension. Confirm success briefly
 Never claim that you inspected a page or used a tool unless the tool returned successfully.
 If the user declines page access, continue without it when possible and state the limitation.
 Do not invent tool results, private data, or completed actions.
-Do not use em dashes in your final answer. Use a colon or parentheses instead.`,
+Do not use em dashes in your final answer. Use a colon or parentheses instead.
+
+${MEMORY_INSTRUCTIONS}`;
+
+export const donnaAgent = new Agent<DonnaRunContext>({
+  name: "Donna",
+  model: process.env.OPENAI_MODEL ?? "gpt-5.6",
+  // Rebuilt per model call so memory changes (including ones made earlier in
+  // the same run) are always reflected, and expired entries drop out.
+  instructions: async (runContext) =>
+    DONNA_BASE_INSTRUCTIONS + (await memoryInstructions(runContext.context?.scope)),
   tools: [
     getCurrentPageContext,
     pmsLookup,
     submitPmsAction,
     listPmsCapabilities,
+    manageMemory,
   ],
 });

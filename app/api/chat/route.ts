@@ -4,6 +4,7 @@ import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import { streamDonnaRun } from "@/lib/agents/stream-run";
 import { pmsScopeSchema } from "@/shared/pms-scope";
+import { pmsUserProfileSchema } from "@/shared/pms-user-profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ const chatRequestSchema = z
     message: z.string().trim().min(1).max(20_000),
     conversationId: z.string().min(1).max(200).optional(),
     scope: pmsScopeSchema,
+    userProfile: pmsUserProfileSchema.nullable().optional(),
   })
   .strict();
 
@@ -105,7 +107,8 @@ export async function POST(request: Request) {
     input: parsed.data.message,
     conversationId,
     signal: request.signal,
-    context: { clientToolResults: {}, scope },
+    // Profile is a display-context snapshot, never authorization evidence.
+    context: { clientToolResults: {}, scope, userProfile: parsed.data.userProfile ?? undefined },
   });
 
   return new Response(stream, {

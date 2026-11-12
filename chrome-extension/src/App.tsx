@@ -5,6 +5,7 @@ import PmsSessionGate from "./components/PmsSessionGate";
 import { capturePmsScope, getPmsAuthState } from "./api/pmsAuth";
 import { ENVIRONMENT_IDS, ENVIRONMENT_KEY, PMS_SESSION_KEY, getSelectedEnvironment, type PmsEnvironment } from "./api/pmsEnvironment";
 import { establishSessionFromCurrentTab, switchPmsEnvironment } from "./api/pmsSession";
+import { clearUserProfile, refreshUserProfile } from "./api/userProfile";
 
 // How often the PMS session is re-checked once settled (steady-state poll).
 // The same poll flips the UI both ways: gate → chat on login, chat → gate on
@@ -79,6 +80,9 @@ export default function App({ ctx }: AppProps) {
     if (!environment) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    const profileController = new AbortController();
+    let profileOwner = "";
+    clearUserProfile();
 
     const scheduleNext = (delay: number) => {
       if (cancelled) return;
@@ -97,6 +101,15 @@ export default function App({ ctx }: AppProps) {
           const scope = await capturePmsScope();
           if (cancelled || scope.environment !== environment) return;
           const nextUser = `${scope.organizationId}:${scope.userId}`;
+          const nextProfileOwner = `${nextUser}:${scope.sessionId}`;
+          if (profileOwner !== nextProfileOwner) {
+            clearUserProfile();
+            await refreshUserProfile(scope, profileController.signal).catch(() => {
+              // Profile personalization is optional; a failed refresh must not block chat.
+            });
+            if (cancelled) return;
+            profileOwner = nextProfileOwner;
+          }
           setUserKey(`${nextUser}:${scope.sessionId}`);
           authenticatedRef.current = true;
         } catch {
@@ -110,6 +123,8 @@ export default function App({ ctx }: AppProps) {
       }
 
       if (authenticatedRef.current) {
+        clearUserProfile();
+        profileOwner = "";
         authenticatedRef.current = false;
         await chrome.storage.session.set({ [PMS_SESSION_KEY]: crypto.randomUUID() });
         if (cancelled) return;
@@ -139,6 +154,8 @@ export default function App({ ctx }: AppProps) {
     void check();
     return () => {
       cancelled = true;
+      profileController.abort();
+      clearUserProfile();
       clearTimeout(timer);
     };
   }, [environment]);
