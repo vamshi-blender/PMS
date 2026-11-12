@@ -8,7 +8,7 @@ import {
   type RunToolApprovalItem,
 } from "@openai/agents";
 import { donnaAgent, type DonnaRunContext } from "./donna";
-import { withPromptContext } from "../../shared/prompt-context";
+import { donnaPromptInput } from "./context-usage";
 import { savePendingRun } from "./pending-runs";
 import { toolArgumentsHash } from "../../shared/pms-scope";
 import {
@@ -236,7 +236,7 @@ export function streamDonnaRun({
         abortController.signal.throwIfAborted();
         const isResumedRun = input instanceof RunState;
         const result = await run(donnaAgent, typeof input === "string"
-          ? `${context.scope ? `<donna_pms_environment>${context.scope.environment}</donna_pms_environment>\n` : ""}${withPromptContext(input)}` : input, {
+          ? donnaPromptInput(input, context.scope?.environment) : input, {
           stream: true,
           signal: abortController.signal,
           maxTurns: 8,
@@ -260,6 +260,11 @@ export function streamDonnaRun({
           phase: "final_answer",
         };
         const segmentsByOutputIndex = new Map<number, TextSegment>();
+        // The latest model call's input already holds the whole conversation
+        // (instructions, tools, history), so input + output of that one call
+        // is what the conversation occupies now. Summing every call in the
+        // run would count the history once per tool roundtrip.
+        let contextTokens: number | undefined;
 
         for await (const event of result) {
           if (isOpenAIResponsesRawModelStreamEvent(event)) {
@@ -267,6 +272,9 @@ export function streamDonnaRun({
 
             if (modelEvent.type === "response.created") {
               segmentsByOutputIndex.clear();
+            } else if (modelEvent.type === "response.completed") {
+              const usage = modelEvent.response.usage;
+              if (usage) contextTokens = usage.input_tokens + usage.output_tokens;
             } else if (
               modelEvent.type === "response.output_item.added" &&
               modelEvent.item.type === "message"
@@ -384,7 +392,12 @@ export function streamDonnaRun({
             } : {}),
             requiresApproval: true,
           });
-          send({ type: "response.paused", runId, pausedAt: Date.now() });
+          send({
+            type: "response.paused",
+            runId,
+            pausedAt: Date.now(),
+            ...(contextTokens === undefined ? {} : { contextTokens }),
+          });
           return;
         }
 
@@ -402,6 +415,7 @@ export function streamDonnaRun({
         send({
           type: "response.completed",
           conversationId,
+          ...(contextTokens === undefined ? {} : { contextTokens }),
         });
       } catch (error) {
         if (!abortController.signal.aborted) {

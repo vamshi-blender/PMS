@@ -2,6 +2,7 @@ import { withPromptContext } from "@/shared/prompt-context";
 import { z } from "zod";
 import { RunState } from "@openai/agents";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
+import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import type { ClientToolResult } from "@/lib/agents/donna";
 import { getPendingRun, takePendingRun } from "@/lib/agents/pending-runs";
 import { restoreRunState, streamDonnaRun } from "@/lib/agents/stream-run";
@@ -38,6 +39,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
+  const caller = await requireCaller(request, origin);
+  if (caller instanceof Response) return caller;
+
   // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
   // here (dev-phase decision; see this commit).
   let body: unknown;
@@ -57,6 +61,8 @@ export async function POST(request: Request) {
       { status: 400, headers: corsHeaders(origin) },
     );
   }
+
+  if (!callerOwnsScope(caller, parsed.data.scope)) return scopeForbidden(origin);
 
   const pending = getPendingRun(parsed.data.runId, parsed.data.toolCallId);
   if (!pending) {

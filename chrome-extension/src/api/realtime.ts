@@ -1,4 +1,5 @@
 import { getBackendUrl } from "./backend";
+import { currentBackendAuthHeaders } from "./backendAuth";
 
 async function readError(response: Response): Promise<string> {
   try {
@@ -16,7 +17,7 @@ export async function createRealtimeClientSecret(
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}/api/realtime/session`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...await currentBackendAuthHeaders() },
     body: "{}",
     signal,
   });

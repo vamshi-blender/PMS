@@ -48,10 +48,11 @@ export type ChatStreamEvent =
       completedAt: number;
     }
   | ({ type: "tool_approval.request" } & ToolApprovalRequest)
-  | { type: "response.paused"; runId: string; pausedAt: number }
+  | { type: "response.paused"; runId: string; pausedAt: number; contextTokens?: number }
   | {
       type: "response.completed";
       conversationId: string;
+      contextTokens?: number;
     }
   | {
       type: "response.error";

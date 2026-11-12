@@ -8,6 +8,10 @@ vi.mock("openai", () => ({ default: class {
   static APIError = class extends Error {};
 } }));
 vi.mock("../lib/agents/stream-run", () => ({ streamDonnaRun: api.stream }));
+// Authentication is covered in api-auth.test.ts.
+vi.mock("../lib/http/auth", () => ({
+  requireCaller: async () => ({ kind: "dev" }), callerOwnsScope: () => true, scopeForbidden: () => new Response(null, { status: 403 }),
+}));
 const scope = { environment: "production" as const, userId: "user", organizationId: "org", sessionId: "00000000-0000-4000-8000-000000000001" };
 const request = (body: object) => new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify(body) });
 beforeEach(() => {

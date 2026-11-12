@@ -1,19 +1,20 @@
 export type { PmsEnvironment } from "../../../shared/pms-scope";
 import type { PmsEnvironment } from "../../../shared/pms-scope";
+import { PMS_API_URLS } from "../../../shared/pms-api";
 
 export const PMS_ENVIRONMENTS = {
   staging: {
     label: "Staging",
     homeUrl: "https://quixyhome.kwixee.co.in",
     hosts: ["quixyhome.kwixee.co.in", "quixyhomeapp.kwixee.co.in"],
-    apiUrl: "https://quixyhomeapi.kwixee.co.in",
+    apiUrl: PMS_API_URLS.staging,
     storageKey: "oidc.user:https://quixyhomeapp.kwixee.co.in/:angular_spa",
   },
   production: {
     label: "Production",
     homeUrl: "https://vividminds.quixy.com",
     hosts: ["vividminds.quixy.com", "homeids.quixy.com"],
-    apiUrl: "https://homeapi.quixy.com",
+    apiUrl: PMS_API_URLS.production,
     storageKey: "oidc.user:https://homeids.quixy.com/:angular_spa",
   },
 } as const;

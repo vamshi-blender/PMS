@@ -1,4 +1,5 @@
 import { getBackendUrl } from "./backend";
+import { currentBackendAuthHeaders } from "./backendAuth";
 
 async function readError(response: Response): Promise<string> {
   try {
@@ -18,6 +19,7 @@ export async function transcribeAudio(audio: Blob, signal?: AbortSignal): Promis
 
   const response = await fetch(`${backendUrl}/api/transcriptions`, {
     method: "POST",
+    headers: await currentBackendAuthHeaders(),
     body: formData,
     signal,
   });

@@ -10,6 +10,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { transcribeAudio } from "../api/transcriptions";
+import { CONTEXT_WINDOW_LIMIT } from "../../../shared/context-window";
 import "./Composer.css";
 
 const MAX_TEXTAREA_HEIGHT = 200;
@@ -44,11 +45,9 @@ interface ComposerProps {
   captureGlobalTyping?: boolean;
   onCancel?: () => void;
   onVoiceMode?: () => void;
+  // Tokens the active conversation occupies in the model's context.
+  contextTokens?: number;
 }
-
-// Mock values until real token accounting is wired in.
-const MOCK_CONTEXT_USED = 38_400;
-const MOCK_CONTEXT_MAX = 128_000;
 
 function ContextUsage({ used, max }: { used: number; max: number }) {
   const ratio = Math.min(used / max, 1);
@@ -89,6 +88,7 @@ export default function Composer({
   captureGlobalTyping = true,
   onCancel,
   onVoiceMode,
+  contextTokens = 0,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [dictationStatus, setDictationStatus] = useState<DictationStatus>("idle");
@@ -571,7 +571,7 @@ export default function Composer({
           >
             <HugeiconsIcon icon={Add01Icon} size={20} />
           </button>
-          <ContextUsage used={MOCK_CONTEXT_USED} max={MOCK_CONTEXT_MAX} />
+          <ContextUsage used={contextTokens} max={CONTEXT_WINDOW_LIMIT} />
         </div>
 
         <div className="composer-trailing">

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import OpenAI from "openai";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
+import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import { streamDonnaRun } from "@/lib/agents/stream-run";
 import { pmsScopeSchema } from "@/shared/pms-scope";
 
@@ -35,6 +36,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
+  const caller = await requireCaller(request, origin);
+  if (caller instanceof Response) return caller;
+
   const unavailable = unavailableReason();
   if (unavailable) {
     return Response.json(
@@ -63,6 +67,7 @@ export async function POST(request: Request) {
 
   let conversationId = parsed.data.conversationId;
   const scope = parsed.data.scope;
+  if (!callerOwnsScope(caller, scope)) return scopeForbidden(origin);
   const metadata = { pms_environment: scope.environment, pms_user: scope.userId, pms_organization: scope.organizationId };
   if (conversationId) {
     try {

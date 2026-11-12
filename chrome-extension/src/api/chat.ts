@@ -1,4 +1,5 @@
 import { getBackendUrl } from "./backend";
+import { backendAuthHeaders, currentBackendAuthHeaders } from "./backendAuth";
 import { isChatStreamEvent, type ChatStreamEvent } from "./protocol";
 import type { ToolApprovalRequest } from "./protocol";
 import { assertPmsScope } from "./pmsAuth";
@@ -10,12 +11,16 @@ async function approvalBinding(request: ToolApprovalRequest, signal: AbortSignal
       request.argumentsHash !== await toolArgumentsHash(request.name, request.arguments)) {
     throw new Error("This approval is unbound or its inputs changed. Start a new request.");
   }
-  await assertPmsScope(request.scope, signal);
-  return { scope: request.scope, conversationId: request.conversationId, argumentsHash: request.argumentsHash };
+  const token = await assertPmsScope(request.scope, signal);
+  return {
+    body: { scope: request.scope, conversationId: request.conversationId, argumentsHash: request.argumentsHash },
+    headers: backendAuthHeaders(token, request.scope.environment),
+  };
 }
 
 interface StreamRequestOptions {
   path: "/api/chat" | "/api/chat/resume";
+  headers: Record<string, string>;
   body: Record<string, unknown>;
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
@@ -33,6 +38,7 @@ async function readError(response: Response): Promise<string> {
 
 async function streamRequest({
   path,
+  headers,
   body,
   signal,
   onEvent,
@@ -40,7 +46,7 @@ async function streamRequest({
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
     signal,
   });
@@ -96,10 +102,11 @@ export async function streamChat(options: {
 }) {
   const scope = options.scope;
   if (!scope) throw new Error("PMS session is not ready. Try again.");
-  await assertPmsScope(scope, options.signal);
+  const token = await assertPmsScope(scope, options.signal);
   if (scope.environment !== options.environment) throw new Error("PMS environment changed. Start a new request.");
   return streamRequest({
     path: "/api/chat",
+    headers: backendAuthHeaders(token, scope.environment),
     body: {
       message: options.message,
       scope,
@@ -128,9 +135,10 @@ export async function resumeChat(options: {
   if (options.runId !== options.request.runId || options.toolCallId !== options.request.toolCallId) throw new Error("Approval call changed.");
   return streamRequest({
     path: "/api/chat/resume",
+    headers: binding.headers,
     body: {
       runId: options.runId,
-      ...binding,
+      ...binding.body,
       toolCallId: options.toolCallId,
       approved: options.approved,
       ...(options.claimId ? { claimId: options.claimId } : {}),
@@ -149,8 +157,8 @@ export async function claimToolExecution(request: ToolApprovalRequest, signal: A
   signal.throwIfAborted();
   const response = await fetch(`${backendUrl}/api/chat/claim`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ runId: request.runId, toolCallId: request.toolCallId, ...binding }),
+    headers: { "Content-Type": "application/json", ...binding.headers },
+    body: JSON.stringify({ runId: request.runId, toolCallId: request.toolCallId, ...binding.body }),
     signal,
   });
   if (!response.ok) throw new Error(await readError(response));
@@ -165,7 +173,7 @@ export async function generateConversationTitle(message: string): Promise<string
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}/api/conversations/title`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...await currentBackendAuthHeaders() },
     body: JSON.stringify({ message }),
   });
 
@@ -187,11 +195,11 @@ export async function generateConversationTitle(message: string): Promise<string
 
 export async function deleteConversation(conversationId: string, scope: PmsScope | undefined): Promise<void> {
   if (!scope) throw new Error("PMS session is not ready.");
-  await assertPmsScope(scope);
+  const token = await assertPmsScope(scope);
   const backendUrl = await getBackendUrl();
   const response = await fetch(`${backendUrl}/api/conversations`, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...backendAuthHeaders(token, scope.environment) },
     body: JSON.stringify({ conversationId, scope }),
   });
 

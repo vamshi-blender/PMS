@@ -24,6 +24,7 @@ import {
   streamChat,
 } from "../api/chat";
 import { createChatSearcher } from "../api/chatSearch";
+import { fetchBaselineContextTokens } from "../api/contextUsage";
 import { executeClientTool } from "../api/clientTools";
 import { capturePmsScope, getPmsUserDetails } from "../api/pmsAuth";
 import type { PmsScope } from "../../../shared/pms-scope";
@@ -104,6 +105,8 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
   const [userName, setUserName] = useState("");
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voiceClosing, setVoiceClosing] = useState(false);
+  // What a new chat occupies before its first message; null until measured.
+  const [baselineContextTokens, setBaselineContextTokens] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
@@ -122,6 +125,10 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
   const voiceSession = useVoiceSession(messages, userName, handleCloseVoice);
   const conversationId = activeChat?.conversationId ?? null;
   const hasMessages = messages.length > 0;
+  const isNewChat = hydrated && !activeChat;
+  const contextTokens = activeChat
+    ? activeChat.contextTokens ?? 0
+    : baselineContextTokens ?? 0;
   const hasPendingApproval = messages.some((message) => message.status === "approval");
   const sidebarChats: SidebarChat[] = [...chatStore.chats]
     .sort((left, right) => {
@@ -173,6 +180,17 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
       controller.abort();
     };
   }, [environment]);
+
+  // Measure the starting context each time a new chat is opened, so the ring
+  // shows instructions + tools instead of an empty 0.
+  useEffect(() => {
+    if (!isNewChat) return;
+    const controller = new AbortController();
+    fetchBaselineContextTokens(environment, controller.signal)
+      .then(setBaselineContextTokens)
+      .catch(() => {});
+    return () => controller.abort();
+  }, [isNewChat, environment]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -472,6 +490,9 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
           ? { ...message.work, pausedAt: event.pausedAt }
           : message.work,
       }));
+      if (event.contextTokens !== undefined) {
+        updateChat(chatId, (chat) => ({ ...chat, contextTokens: event.contextTokens }));
+      }
     } else if (event.type === "response.completed") {
       updateAssistant(chatId, messageId, (message) => ({
         ...message,
@@ -488,6 +509,9 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
       updateChat(chatId, (chat) => ({
         ...chat,
         conversationId: event.conversationId,
+        ...(event.contextTokens === undefined
+          ? {}
+          : { contextTokens: event.contextTokens }),
       }));
     } else if (event.type === "response.error") {
       updateAssistant(chatId, messageId, (message) => {
@@ -652,6 +676,11 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
         titleStatus: "pending",
         messages: [userMessage, assistantMessage],
         conversationId: null,
+        // Start from the measured baseline so the ring does not drop to 0
+        // while the first response is in flight.
+        ...(baselineContextTokens === null
+          ? {}
+          : { contextTokens: baselineContextTokens }),
         pinned: false,
         createdAt: now,
         updatedAt: now,
@@ -988,6 +1017,7 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
                   captureGlobalTyping={!sidebarOpen && !voiceOpen}
                   onCancel={handleCancel}
                   onVoiceMode={handleOpenVoice}
+                  contextTokens={contextTokens}
                 />
               </div>
             </div>
@@ -1003,6 +1033,7 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
                 captureGlobalTyping={!sidebarOpen && !voiceOpen}
                 onCancel={handleCancel}
                 onVoiceMode={handleOpenVoice}
+                contextTokens={contextTokens}
               />
             </div>
           </main>

@@ -243,7 +243,9 @@ it("keeps manifest fallback caches separated by backend and environment", async 
   expect((await getPmsBundle()).environment).toBe("production");
   await selectEnvironment("staging");
   vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Offline"); }));
-  await expect(getPmsBundle()).rejects.toThrow("Offline");
+  // Staging has no cached bundle (and no session to fetch one with), so the
+  // production cache must not be served in its place.
+  await expect(getPmsBundle()).rejects.toThrow();
   await selectEnvironment(scope.environment);
   expect((await getPmsBundle()).environment).toBe("production");
 });

@@ -66,10 +66,13 @@ export type ChatStreamEvent =
       type: "response.paused";
       runId: string;
       pausedAt: number;
+      // Tokens the conversation occupies after the latest model response.
+      contextTokens?: number;
     }
   | {
       type: "response.completed";
       conversationId: string;
+      contextTokens?: number;
     }
   | {
       type: "response.error";

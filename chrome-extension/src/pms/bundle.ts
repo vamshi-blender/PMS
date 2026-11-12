@@ -4,6 +4,7 @@
 // re-zipping the extension. The last good bundle is cached in
 // chrome.storage.local as an offline/startup fallback.
 import { getBackendUrl } from "../api/backend";
+import { currentBackendAuthHeaders } from "../api/backendAuth";
 import type { PmsBundle } from "./types";
 import { scopeForSignal } from "../api/pmsAuth";
 import { getSelectedEnvironment, type PmsEnvironment } from "../api/pmsEnvironment";
@@ -38,7 +39,10 @@ export async function getPmsBundle(signal?: AbortSignal): Promise<PmsBundle> {
   const environment = scopeForSignal(signal)?.environment ?? await getSelectedEnvironment();
   const key = `${BUNDLE_CACHE_KEY}:${backendUrl}:${environment}`;
   try {
-    const response = await fetch(`${backendUrl}/api/pms/manifests?environment=${environment}`, { signal });
+    const response = await fetch(`${backendUrl}/api/pms/manifests?environment=${environment}`, {
+      headers: await currentBackendAuthHeaders(environment),
+      signal,
+    });
     if (!response.ok) throw new Error(`Bundle fetch failed (${response.status}).`);
     const bundle: unknown = await response.json();
     if (!isUsableBundle(bundle, environment)) {

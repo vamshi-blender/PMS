@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
+import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import { pmsScopeSchema } from "@/shared/pms-scope";
 
 export const runtime = "nodejs";
@@ -32,6 +33,9 @@ export async function DELETE(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
+  const caller = await requireCaller(request, origin);
+  if (caller instanceof Response) return caller;
+
   const unavailable = unavailableReason();
   if (unavailable) {
     return Response.json(
@@ -57,6 +61,8 @@ export async function DELETE(request: Request) {
       { status: 400, headers: corsHeaders(origin) },
     );
   }
+
+  if (!callerOwnsScope(caller, parsed.data.scope)) return scopeForbidden(origin);
 
   try {
     const openai = new OpenAI();

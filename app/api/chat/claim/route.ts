@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
+import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import { claimPendingRun, getPendingRun } from "@/lib/agents/pending-runs";
 import { pmsScopeSchema, samePmsScope } from "@/shared/pms-scope";
 
@@ -20,9 +21,12 @@ export function OPTIONS(request: Request) {
 export async function POST(request: Request) {
   const origin = getAllowedOrigin(request);
   if (origin === null) return Response.json({ error: "Origin is not allowed." }, { status: 403 });
+  const caller = await requireCaller(request, origin);
+  if (caller instanceof Response) return caller;
   const headers = { ...corsHeaders(origin), "Cache-Control": "no-store" };
   const parsed = schema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return Response.json({ error: "Invalid approval request." }, { status: 400, headers });
+  if (!callerOwnsScope(caller, parsed.data.scope)) return scopeForbidden(origin);
   request.signal.throwIfAborted();
   const pending = getPendingRun(parsed.data.runId, parsed.data.toolCallId);
   if (!pending) return Response.json({ error: "This tool request expired or was already handled." }, { status: 410, headers });

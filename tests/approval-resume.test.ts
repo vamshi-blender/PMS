@@ -7,6 +7,11 @@ import { streamDonnaRun } from "../lib/agents/stream-run";
 import { POST } from "../app/api/chat/resume/route";
 import { POST as claim } from "../app/api/chat/claim/route";
 
+// Authentication is covered in api-auth.test.ts; these tests exercise what
+// happens after a caller is accepted.
+vi.mock("../lib/http/auth", () => ({
+  requireCaller: async () => ({ kind: "dev" }), callerOwnsScope: () => true, scopeForbidden: () => new Response(null, { status: 403 }),
+}));
 setTracingDisabled(true);
 const originalModel = donnaAgent.model;
 const scope = { environment: "staging" as const, userId: "user", organizationId: "org", sessionId: "00000000-0000-4000-8000-000000000001" };

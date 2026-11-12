@@ -20,6 +20,8 @@ export interface StoredChat {
   titleStatus: ChatTitleStatus;
   messages: ChatMessage[];
   conversationId: string | null;
+  // Tokens the conversation occupies; unknown for chats saved before tracking.
+  contextTokens?: number;
   pinned: boolean;
   createdAt: number;
   updatedAt: number;
@@ -186,6 +188,11 @@ function restoreChat(value: unknown): StoredChat | null {
       typeof candidate.conversationId === "string" && candidate.conversationId
         ? candidate.conversationId
         : null,
+    ...(typeof candidate.contextTokens === "number" &&
+    Number.isFinite(candidate.contextTokens) &&
+    candidate.contextTokens >= 0
+      ? { contextTokens: candidate.contextTokens }
+      : {}),
     pinned: candidate.pinned === true,
     createdAt:
       typeof candidate.createdAt === "number" && Number.isFinite(candidate.createdAt)
