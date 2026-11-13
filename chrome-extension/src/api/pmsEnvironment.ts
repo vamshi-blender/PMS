@@ -22,6 +22,9 @@ export const PMS_ENVIRONMENTS = {
 export const ENVIRONMENT_KEY = "donnaPmsEnvironment";
 export const PMS_SESSION_KEY = "donnaPmsSessionId";
 export const ENVIRONMENT_IDS: PmsEnvironment[] = ["staging", "production"];
+// Environment Donna opens on when nothing has chosen one yet (a fresh browser
+// session, or opened from a page that is not a PMS tab).
+export const DEFAULT_ENVIRONMENT: PmsEnvironment = "production";
 
 export function environmentFromUrl(url: string | undefined): PmsEnvironment | null {
   if (!url) return null;
@@ -36,7 +39,7 @@ export function environmentFromUrl(url: string | undefined): PmsEnvironment | nu
 
 export async function getSelectedEnvironment(): Promise<PmsEnvironment> {
   const stored = await chrome.storage.session.get(ENVIRONMENT_KEY);
-  return stored[ENVIRONMENT_KEY] === "production" ? "production" : "staging";
+  return stored[ENVIRONMENT_KEY] === "staging" ? "staging" : DEFAULT_ENVIRONMENT;
 }
 
 export async function selectEnvironment(environment: PmsEnvironment): Promise<void> {

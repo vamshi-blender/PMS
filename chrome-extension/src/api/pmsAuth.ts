@@ -4,7 +4,7 @@
 // the single entry point all authenticated PMS calls (lookups, resolvers,
 // executors) must go through.
 import { ensureEnvironmentTab, getSessionTabs, isPmsTab } from "./pmsSession";
-import { getPmsSessionId, getSelectedEnvironment, PMS_ENVIRONMENTS, type PmsEnvironment } from "./pmsEnvironment";
+import { DEFAULT_ENVIRONMENT, getPmsSessionId, getSelectedEnvironment, PMS_ENVIRONMENTS, type PmsEnvironment } from "./pmsEnvironment";
 import { samePmsScope, type PmsScope } from "../../../shared/pms-scope";
 
 const requestScopes = new WeakMap<AbortSignal, PmsScope>();
@@ -63,7 +63,7 @@ async function readTokenFromTab(tabId: number, environment: PmsEnvironment): Pro
   }
 }
 
-export async function getPmsAuthState(environment: PmsEnvironment = "staging"): Promise<PmsAuthState> {
+export async function getPmsAuthState(environment: PmsEnvironment = DEFAULT_ENVIRONMENT): Promise<PmsAuthState> {
   const tabs = await findPmsTabs(environment);
   if (tabs.length === 0) return { status: "no-tab" };
 
@@ -82,7 +82,7 @@ export async function getPmsAuthState(environment: PmsEnvironment = "staging"): 
   return { status: anyLoading ? "loading" : "logged-out" };
 }
 
-export async function getPmsAccessToken(environment: PmsEnvironment = "staging"): Promise<string> {
+export async function getPmsAccessToken(environment: PmsEnvironment = DEFAULT_ENVIRONMENT): Promise<string> {
   const state = await getPmsAuthState(environment);
   if (state.status !== "ok") {
     throw new Error(

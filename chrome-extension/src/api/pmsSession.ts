@@ -5,7 +5,7 @@
 // session. Tools will later resolve "the page" through this scope instead of
 // the focused window (out of scope for now — see getSessionTabs).
 
-import { environmentFromUrl, getSelectedEnvironment, PMS_ENVIRONMENTS, PMS_SESSION_KEY, selectEnvironment, type PmsEnvironment } from "./pmsEnvironment";
+import { DEFAULT_ENVIRONMENT, environmentFromUrl, getSelectedEnvironment, PMS_ENVIRONMENTS, PMS_SESSION_KEY, selectEnvironment, type PmsEnvironment } from "./pmsEnvironment";
 
 const SESSION_GROUP_KEY = "donnaTabGroupId";
 
@@ -58,9 +58,9 @@ export async function ensureSessionTabGroup(
   }
   if (groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
     const anchorTabId = detected && tab.id !== undefined
-      ? tab.id : await createPmsTab(tab.windowId, "staging");
+      ? tab.id : await createPmsTab(tab.windowId, DEFAULT_ENVIRONMENT);
     groupId = await chrome.tabs.group({ tabIds: [anchorTabId], createProperties: { windowId: tab.windowId } });
-    anchorEnvironment = detected ?? "staging";
+    anchorEnvironment = detected ?? DEFAULT_ENVIRONMENT;
     await chrome.tabGroups.update(groupId, { title: "Donna", color: "blue" });
   }
   await setSessionGroup(groupId);

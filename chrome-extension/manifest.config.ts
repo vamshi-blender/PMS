@@ -1,9 +1,12 @@
 import { defineManifest } from "@crxjs/vite-plugin";
+import pkg from "./package.json";
 
 export default defineManifest({
   manifest_version: 3,
   name: "Donna",
-  version: "1.0.0",
+  // Single source of truth: bump "version" in package.json only. Chrome allows
+  // digits and dots only (e.g. 1.2.0), so no -beta style suffixes.
+  version: pkg.version,
   description:
     "Donna opens in a floating pop-out window, with optional popup and side-panel modes.",
   // "tabs" gives reliable tab.url on every scheme for PMS matching; "tabGroups"

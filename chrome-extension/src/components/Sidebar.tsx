@@ -79,6 +79,7 @@ export default function Sidebar({
   const [searchValue, setSearchValue] = useState("");
   // null = no search ran yet (empty query); otherwise ranked chat ids.
   const [searchResultIds, setSearchResultIds] = useState<string[] | null>(null);
+  const [appVersion] = useState(() => chrome.runtime.getManifest().version);
   const [backendUrl, setBackendUrl] = useState("");
   const [backendDraft, setBackendDraft] = useState("");
   const [backendHint, setBackendHint] = useState("");
@@ -536,7 +537,7 @@ export default function Sidebar({
               type="url"
               value={backendDraft}
               onChange={(event) => setBackendDraft(event.target.value)}
-              placeholder="http://localhost:3000"
+              placeholder="https://worklogs-wheat.vercel.app"
               spellCheck={false}
             />
             <button
@@ -574,7 +575,11 @@ export default function Sidebar({
               </span>
               <span className="sidebar-user-info">
                 <span className="sidebar-user-name">{userName || "PMS profile"}</span>
-                <span className="sidebar-user-plan">{PMS_ENVIRONMENTS[environment].label}</span>
+                <span className="sidebar-user-plan">
+                  {PMS_ENVIRONMENTS[environment].label}
+                  <span aria-hidden="true"> · </span>
+                  <span className="sidebar-user-version">v{appVersion}</span>
+                </span>
               </span>
             </button>
           </div>

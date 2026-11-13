@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# extension zip offered on the home page, built by scripts/package-extension.mjs
+/public/donna-extension.zip
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

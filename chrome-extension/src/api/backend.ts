@@ -1,5 +1,9 @@
 const BACKEND_URL_KEY = "donnaBackendUrl";
-export const DEFAULT_BACKEND_URL = "http://localhost:3000";
+// The deployed backend, so a colleague who installs the shared zip works without
+// touching settings. To develop against a local server, set the backend in the
+// sidebar, or build with VITE_DEFAULT_BACKEND_URL=http://localhost:3000.
+export const DEFAULT_BACKEND_URL =
+  import.meta.env.VITE_DEFAULT_BACKEND_URL || "https://worklogs-wheat.vercel.app";
 
 export function normalizeBackendUrl(value: string): string {
   const url = new URL(value.trim());

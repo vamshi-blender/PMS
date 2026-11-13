@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "package:extension": "node scripts/package-extension.mjs",
+    "build:vercel": "node scripts/package-extension.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
@@ -28,6 +30,7 @@
     "@types/react-test-renderer": "^19.3.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
+    "fflate": "^0.8.3",
     "react-test-renderer": "^19.2.4",
     "tailwindcss": "^4",
     "typescript": "^5",

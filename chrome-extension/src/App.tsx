@@ -3,7 +3,7 @@ import type { DisplayMode } from "./mode";
 import ChatLayout from "./components/ChatLayout";
 import PmsSessionGate from "./components/PmsSessionGate";
 import { capturePmsScope, getPmsAuthState } from "./api/pmsAuth";
-import { ENVIRONMENT_IDS, ENVIRONMENT_KEY, PMS_SESSION_KEY, getSelectedEnvironment, type PmsEnvironment } from "./api/pmsEnvironment";
+import { DEFAULT_ENVIRONMENT, ENVIRONMENT_IDS, ENVIRONMENT_KEY, PMS_SESSION_KEY, getSelectedEnvironment, type PmsEnvironment } from "./api/pmsEnvironment";
 import { establishSessionFromCurrentTab, switchPmsEnvironment } from "./api/pmsSession";
 import { clearUserProfile, refreshUserProfile } from "./api/userProfile";
 
@@ -174,5 +174,5 @@ export default function App({ ctx }: AppProps) {
   }, []);
 
   if (phase === "authed" && environment) return <ChatLayout key={`${environment}:${userKey}`} ctx={ctx} environment={environment} onEnvironmentChange={changeEnvironment} />;
-  return <PmsSessionGate environment={environment ?? "staging"} onEnvironmentChange={changeEnvironment} error={switchError} mode={phase === "checking" ? "checking" : "gate"} />;
+  return <PmsSessionGate environment={environment ?? DEFAULT_ENVIRONMENT} onEnvironmentChange={changeEnvironment} error={switchError} mode={phase === "checking" ? "checking" : "gate"} />;
 }

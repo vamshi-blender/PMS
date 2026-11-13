@@ -1,0 +1,4 @@
+{
+  "installCommand": "npm ci && npm ci --prefix chrome-extension",
+  "buildCommand": "npm run build:vercel"
+}
