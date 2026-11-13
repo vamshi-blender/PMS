@@ -16,6 +16,9 @@ import type { PmsScope } from "../../shared/pms-scope";
 import type { PmsUserProfile } from "../pms/user-profile";
 import { memoryInstructions } from "../memory/prompt";
 import { MEMORY_INSTRUCTIONS, manageMemory } from "../memory/tool";
+import { SKILL_INSTRUCTIONS, skillInstructions } from "../skills/prompt";
+import { manageProceduralMemory } from "../skills/tool";
+import type { Skill, SkillSummary } from "../skills/store";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -29,6 +32,8 @@ export interface DonnaRunContext {
   userProfile?: PmsUserProfile;
   /** The chat this run belongs to; recorded as the source of saved memories. */
   conversationId?: string;
+  skillCatalog?: SkillSummary[];
+  loadedSkills?: Skill[];
 }
 
 // Every tool that needsApproval must include these fields in its parameters.
@@ -217,7 +222,7 @@ const submitPmsAction = tool<
 >({
   name: "submit_pms_action",
   description:
-    "Submit one PMS action (e.g. a leave application or worklog) for real, using the user's PMS session in the extension. This creates an actual record and routes it into the PMS workflow. The extension shows the user an approval card before executing — call this directly once the fields are collected; never ask for verbal confirmation in chat first.",
+    "Prepare one PMS action (leave application, worklog or issue status change) for the extension's approval card. Calling this pauses for approval; it does not create or change a PMS record until the user approves the card. Once valid fields are available, call this directly instead of asking for chat confirmation. An explicitly labeled estimated worklog end may be proposed on the card. After approval, execution uses the user's PMS session and creates a real change.",
   parameters: submitPmsActionParameters,
   needsApproval: async () => true,
   async execute(_input, runContext, details) {
@@ -250,18 +255,10 @@ ${PROMPT_CONTEXT_INSTRUCTIONS}
 Use get_current_page_context only when the user's request depends on the active browser page. Explain why page access is needed before requesting it when that is not obvious.
 
 PMS (the user's Quixy project-management system):
-For date-range, weekly, or daily-completeness questions, use fromDate/toDate with getMyAttendance and/or getMyWorklogs once each for the whole range. Set date/logDate to null and excludeWeekends=true when Saturdays/Sundays are off. The tool paginates internally and computes full daily/weekly summaries before capping detail rows. Use weekly.knownHours with datesWithoutEntries/datesWithUnknownHours; never calculate full-range totals from a truncated detail list. Missing attendance records are unknown, not zero hours or proof of absence. No worklog entry means nothing was logged for that date, not proof no work happened. Attendance hours do not prove physical office presence when WFH is possible. Preserve the requested range and do not silently restrict it to a year or month.
 The server's donna_pms_environment tag identifies the environment for this entire run. All PMS results and actions belong to that environment. Never mix staging and production data or claim an action happened in another environment. Switching environments requires using the extension's environment selector.
-Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates using the hidden donna_context timestamp.
-When a lookup can return many rows, pass filters (by status, leave type, dates, or application id) and columns so only the data the question needs is fetched — check list_pms_capabilities for each lookup's filterable fields, valid values, and column names.
-For changing issue status: use pms_lookup with getAllowedIssueStatuses and the user's exact issueId. Call it with newStatus and supplied details to discover visible fields, required fields, options and validationErrors. Collect only necessary or explicitly requested details; never invent lead confirmation, branches, RCA or file uploads. If requiresPmsForm is nonempty, direct the user to PMS. Do not call submit_pms_action until validationErrors are empty. Use canonical issueId, exact summary, currentStatus and newStatus from this lookup; preserve the user's explicit prefix. The extension rechecks fresh form rules and transitions after approval. Never bypass intermediate statuses or automatically retry uncertain writes. Confirm success with issue ID and new status, without internal IDs.
-For attendance and login/logout-time questions, use pms_lookup with lookup=getMyAttendance and date. Use the hidden context for relative dates. In Time is attendance login and Out Time is logout, already in local India display format. If no record is returned, say no attendance record was found for that date; do not claim the user was absent or did not log in. Never invent missing Out Time or Total Hours, and distinguish attendance hours from logged worklog hours.
-For questions about hours already logged today or on a specific day across all issues, use pms_lookup with lookup=getMyWorklogs and logDate. Resolve relative dates using the hidden donna_context timestamp. Report the returned totalHours and entryCount; do not treat a truncated detail list as the total, and do not sum issue-specific worklogs as if they were all of the user's worklogs.
-For worklogs: first use pms_lookup with lookup=getIssueContext and the user's exact issueId (never replace an explicit prefix), and lookup=getWorklogCategories. If the ID is missing, mismatched or ambiguous, stop and ask the user; never switch to a suggested ID without their correction. A numeric ID must resolve uniquely. Put the returned full Issue Id and exact Summary into issueId and issueSummary. Do not invent category labels or issue details. Billable hours default to log hours: do not ask for them separately. Pass billableHours as null unless the user explicitly gives billable hours, in which case preserve that value, including zero. Include full issue ID, summary, category, log date, log hours, billable hours and description in the approval. Only request a new approval after a changed issue/category is resolved. Never retry a submission automatically after an uncertain result.
-Use list_pms_capabilities when the user asks what PMS actions you support, or to check an action's fields and rules before collecting them.
-For PMS actions (submit_pms_action): collect the user-facing fields conversationally. Check the business rules from list_pms_capabilities early and tell the user immediately if their request violates one (for example leave ranges crossing a calendar month or ending after the 25th) instead of collecting the rest of the fields first.
-Submitting: once all required fields are collected, call submit_pms_action directly — do NOT ask for verbal or typed confirmation first. The extension shows the user an approval card with the action details before anything executes; that card is the one and only confirmation step, and declining it cancels the submission. Put the key details (leave type, dates, days, reason) in the approvalDescription so the card is self-explanatory. For leave applications, set acknowledgment to true; the user's approval on the card is the acknowledgment. Dates are YYYY-MM-DD.
-The submission executes locally in the user's extension. Confirm success briefly using meaningful details from the successful tool result: for worklogs, include the hours, issue ID and category (for example "Added 1.5 hours to QKA-49715 under Code Review."). For leave, confirm the leave type and dates and include a human-readable application number when available. Do not display internal record IDs or app-data UUIDs unless the user explicitly asks for them; they remain available in the tool result. Never claim a submission happened unless the tool returned success.
+${SKILL_INSTRUCTIONS}
+Use pms_lookup directly for current PMS data; fetch supported missing information before asking the user. Use list_pms_capabilities for supported lookups, fields and business rules. Never invent policies, identifiers, required inputs or tool results. Missing attendance is unknown, and attendance is not proof of physical office presence. Use full summaries for totals, never truncated rows. Preserve explicit issue prefixes and resolve numeric IDs uniquely.
+For submissions, the extension's approval card is the only confirmation step. Call submit_pms_action when fields and validations are ready; do not ask for typed confirmation first. Never bypass approvals, retry an uncertain write, or claim success without a successful tool result. Confirm meaningful details without internal IDs unless requested.
 
 Never claim that you inspected a page or used a tool unless the tool returned successfully.
 If the user declines page access, continue without it when possible and state the limitation.
@@ -275,13 +272,19 @@ export const donnaAgent = new Agent<DonnaRunContext>({
   model: process.env.OPENAI_MODEL ?? "gpt-5.6",
   // Rebuilt per model call so memory changes (including ones made earlier in
   // the same run) are always reflected, and expired entries drop out.
-  instructions: async (runContext) =>
-    DONNA_BASE_INSTRUCTIONS + (await memoryInstructions(runContext.context?.scope)),
+  instructions: async (runContext) => {
+    const [memory, skills] = await Promise.all([
+      memoryInstructions(runContext.context?.scope),
+      skillInstructions(runContext.context),
+    ]);
+    return DONNA_BASE_INSTRUCTIONS + memory + skills;
+  },
   tools: [
     getCurrentPageContext,
     pmsLookup,
     submitPmsAction,
     listPmsCapabilities,
     manageMemory,
+    manageProceduralMemory,
   ],
 });

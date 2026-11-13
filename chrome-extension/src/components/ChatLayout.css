@@ -75,6 +75,24 @@
   color: var(--text-tertiary);
 }
 
+button.chat-environment {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button.chat-environment:hover {
+  color: var(--text-primary);
+}
+
+button.chat-environment:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 .chat-topbar-actions {
   display: flex;
   align-items: center;

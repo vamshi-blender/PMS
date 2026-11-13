@@ -95,6 +95,7 @@ interface ChatLayoutProps {
 
 export default function ChatLayout({ ctx, environment, onEnvironmentChange }: ChatLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [environmentMenuOpen, setEnvironmentMenuOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode | null>(null);
   const [modeHint, setModeHint] = useState("");
   const [chatStore, setChatStore] = useState<StoredChatStore>(EMPTY_CHAT_STORE);
@@ -948,7 +949,7 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
             <button
               type="button"
               className="icon-button sidebar-trigger app-tooltip app-tooltip--bottom app-tooltip--start"
-              onClick={() => setSidebarOpen(true)}
+              onClick={() => { setEnvironmentMenuOpen(false); setSidebarOpen(true); }}
               aria-label="Open sidebar"
               data-tooltip="Open sidebar"
             >
@@ -957,7 +958,13 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
             <span className="chat-brand-labels">
               <span className="chat-brand-name">Donna</span>
               <span className="chat-environment-separator" aria-hidden="true">•</span>
-              <span className="chat-environment">{PMS_ENVIRONMENTS[environment].label}</span>
+              <button
+                type="button"
+                className="chat-environment"
+                aria-label={`Change PMS environment: ${PMS_ENVIRONMENTS[environment].label}`}
+                aria-expanded={sidebarOpen && environmentMenuOpen}
+                onClick={() => { setEnvironmentMenuOpen(true); setSidebarOpen(true); }}
+              >{PMS_ENVIRONMENTS[environment].label}</button>
             </span>
           </div>
           <div className="chat-topbar-actions">
@@ -1057,6 +1064,8 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
 
       <Sidebar
         open={sidebarOpen}
+        environmentMenuOpen={environmentMenuOpen}
+        onEnvironmentMenuOpenChange={setEnvironmentMenuOpen}
         userName={userName}
         environment={environment}
         onEnvironmentChange={onEnvironmentChange}

@@ -31,6 +31,8 @@ export interface SidebarChat {
 
 interface SidebarProps {
   open: boolean;
+  environmentMenuOpen: boolean;
+  onEnvironmentMenuOpenChange: (open: boolean) => void;
   // Real name from the PMS session; empty while it loads.
   userName: string;
   environment: PmsEnvironment;
@@ -49,6 +51,8 @@ interface SidebarProps {
 
 export default function Sidebar({
   open,
+  environmentMenuOpen,
+  onEnvironmentMenuOpenChange: setEnvironmentMenuOpen,
   userName,
   environment,
   onEnvironmentChange,
@@ -64,7 +68,6 @@ export default function Sidebar({
   onDeleteChat,
 }: SidebarProps) {
   const [mounted, setMounted] = useState(open);
-  const [environmentMenuOpen, setEnvironmentMenuOpen] = useState(false);
   const environmentMenuRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
@@ -93,7 +96,12 @@ export default function Sidebar({
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("pointerdown", dismiss); document.removeEventListener("keydown", escape); };
-  }, [environmentMenuOpen]);
+  }, [environmentMenuOpen, setEnvironmentMenuOpen]);
+
+  useEffect(() => {
+    if (!open || !visible || !environmentMenuOpen) return;
+    environmentMenuRef.current?.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="true"]')?.focus();
+  }, [open, visible, environmentMenuOpen]);
 
   useEffect(() => {
     getSavedTheme().then(setTheme);
@@ -137,7 +145,7 @@ export default function Sidebar({
     setSearchResultIds(null);
     const timeout = setTimeout(() => setMounted(false), TRANSITION_MS);
     return () => clearTimeout(timeout);
-  }, [open]);
+  }, [open, setEnvironmentMenuOpen]);
 
   // Debounced search-as-you-type.
   useEffect(() => {
@@ -559,7 +567,7 @@ export default function Sidebar({
               className="sidebar-user-row"
               aria-expanded={environmentMenuOpen}
               aria-label={`Profile and PMS environment: ${PMS_ENVIRONMENTS[environment].label}`}
-              onClick={() => setEnvironmentMenuOpen(value => !value)}
+              onClick={() => setEnvironmentMenuOpen(!environmentMenuOpen)}
             >
               <span className="sidebar-user-avatar" aria-hidden="true">
                 {userName.charAt(0)}
