@@ -37,8 +37,8 @@ yarn-error.log*
 # vercel
 .vercel
 
-# extension zip offered on the home page, built by scripts/package-extension.mjs
-/public/donna-extension.zip
+# local extension zips from `npm run package:extension` (published ones live in Supabase Storage)
+/.extension-release/
 
 # typescript
 *.tsbuildinfo

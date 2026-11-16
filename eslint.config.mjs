@@ -14,6 +14,12 @@ const eslintConfig = defineConfig([
     "chrome-extension/dist/**",
     "next-env.d.ts",
   ]),
+  {
+    // The extension is a Vite app, not Next.js: next/image does not exist
+    // there, so a plain <img> is correct.
+    files: ["chrome-extension/**/*.{ts,tsx}"],
+    rules: { "@next/next/no-img-element": "off" },
+  },
 ]);
 
 export default eslintConfig;

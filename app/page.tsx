@@ -1,15 +1,18 @@
-import { statSync } from "node:fs";
-import { join } from "node:path";
 import extensionPackage from "../chrome-extension/package.json";
+import { findRelease, releaseFileName, storageConfigured } from "@/lib/extension/release.mjs";
 
-const ZIP_FILE = "donna-extension.zip";
+// Re-check now and then, so a version published after the last deploy (or a
+// temporary storage hiccup while building) does not stick on this page.
+export const revalidate = 300;
 
-// The zip is built into public/ before `next build` (scripts/package-extension.mjs).
-// Missing, e.g. in local dev before packaging, is shown instead of a dead link.
-function extensionZipSize(): number | null {
+// The published zip's size, or null when this version is not available. The
+// download itself is /donna-extension.zip, which redirects to Supabase Storage.
+async function publishedSize(version: string): Promise<number | null> {
+  if (!storageConfigured()) return null;
   try {
-    return statSync(join(process.cwd(), "public", ZIP_FILE)).size;
-  } catch {
+    return (await findRelease(version))?.size ?? null;
+  } catch (error) {
+    console.error("Could not check the published extension", error);
     return null;
   }
 }
@@ -39,9 +42,9 @@ const UPDATE_STEPS = [
   "The version under your name in Donna's sidebar should now match the one on this page.",
 ];
 
-export default function Home() {
+export default async function Home() {
   const { version } = extensionPackage;
-  const size = extensionZipSize();
+  const size = await publishedSize(version);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-10 px-6 py-16 sm:py-24">
@@ -74,14 +77,13 @@ export default function Home() {
         ) : (
           <>
             <a
-              href={`/${ZIP_FILE}`}
-              download={`donna-${version}.zip`}
+              href="/donna-extension.zip"
               className="inline-flex h-12 items-center justify-center rounded-full bg-foreground px-6 font-medium text-background transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
             >
               Download Donna {version}
             </a>
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              donna-{version}.zip · {formatSize(size)} · Chrome on desktop
+              {releaseFileName(version)} · {formatSize(size)} · Chrome on desktop
             </p>
           </>
         )}
