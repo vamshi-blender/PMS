@@ -5,15 +5,22 @@ import { findRelease, releaseFileName, storageConfigured } from "@/lib/extension
 // temporary storage hiccup while building) does not stick on this page.
 export const revalidate = 300;
 
-// The published zip's size, or null when this version is not available. The
-// download itself is /donna-extension.zip, which redirects to Supabase Storage.
-async function publishedSize(version: string): Promise<number | null> {
-  if (!storageConfigured()) return null;
+type ReleaseStatus =
+  | { status: "available"; size: number }
+  | { status: "unconfigured" | "unpublished" | "unavailable" };
+
+// A failed lookup cannot tell us whether a release has been published.
+// The download itself is /donna-extension.zip, which redirects to Storage.
+async function publishedRelease(version: string): Promise<ReleaseStatus> {
+  if (!storageConfigured()) return { status: "unconfigured" };
   try {
-    return (await findRelease(version))?.size ?? null;
+    const release = await findRelease(version);
+    return release ? { status: "available", size: release.size } : { status: "unpublished" };
   } catch (error) {
-    console.error("Could not check the published extension", error);
-    return null;
+    // This is an expected service failure with fallback UI, rather than a
+    // rendering error. Keep a server diagnostic without triggering the dev overlay.
+    console.warn("Published extension lookup unavailable:", error instanceof Error ? error.message : "Storage request failed");
+    return { status: "unavailable" };
   }
 }
 
@@ -44,7 +51,7 @@ const UPDATE_STEPS = [
 
 export default async function Home() {
   const { version } = extensionPackage;
-  const size = await publishedSize(version);
+  const release = await publishedRelease(version);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-10 px-6 py-16 sm:py-24">
@@ -70,9 +77,13 @@ export default async function Home() {
           </span>
         </div>
 
-        {size === null ? (
+        {release.status !== "available" ? (
           <p role="status" className="text-zinc-600 dark:text-zinc-400">
-            The download is not available on this server right now. Ask the team to redeploy.
+            {release.status === "unavailable"
+              ? "The download service is temporarily unreachable. Please refresh this page to try again shortly."
+              : release.status === "unpublished"
+                ? `Donna ${version} has not been published yet. Ask the team to deploy this version.`
+                : "Extension downloads are not configured on this server. Ask the team to configure them."}
           </p>
         ) : (
           <>
@@ -83,7 +94,7 @@ export default async function Home() {
               Download Donna {version}
             </a>
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              {releaseFileName(version)} · {formatSize(size)} · Chrome on desktop
+              {releaseFileName(version)} · {formatSize(release.size)} · Chrome on desktop
             </p>
           </>
         )}
