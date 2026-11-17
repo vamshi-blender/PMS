@@ -10,6 +10,17 @@ import { getSavedMode, switchMode, type DisplayMode } from "../mode";
 import Sidebar, { type SidebarChat } from "./Sidebar";
 import Composer from "./Composer";
 import Greeting from "./Greeting";
+import { blinkOnReminderFired, drawAttentionToCurrentWindow } from "../notifications/attention";
+import { syncReminders } from "../reminders/sync";
+import {
+  checkOutcome,
+  finishCheck,
+  listenForDueChecks,
+  nextPendingCheck,
+  parseCheckReport,
+  rememberCheckChat,
+} from "../reminders/checks";
+import type { ReminderCheckReport } from "../../../shared/reminders";
 import VoiceScreen from "./VoiceScreen";
 import MessageList, {
   type AgentWorkLog,
@@ -152,6 +163,7 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
     void capturePmsScope().then(scope => {
       if (cancelled || scope.environment !== environment) return undefined;
       ownerRef.current = scope;
+      void syncReminders(scope);
       return loadChatStore(environment, scope);
     }).then(store => {
       if (!store) return;
@@ -286,6 +298,35 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
       modeSwitchingRef.current = false;
     }
   }
+
+  useEffect(() => blinkOnReminderFired(), []);
+
+  // Scheduled "check" reminders: the service worker records a due check and
+  // asks open pages to run it. Answering true tells it this page will.
+  const runChecksRef = useRef<() => void>(() => {});
+  const checkRunningRef = useRef(false);
+  // Checks that failed since this page loaded; retried on the next due message
+  // or reload, so a persistent failure cannot loop.
+  const failedChecksRef = useRef(new Set<number>());
+  useEffect(
+    () =>
+      listenForDueChecks(
+        () => ownerRef.current !== undefined && persistedStoreRef.current !== null,
+        () => {
+          failedChecksRef.current.clear();
+          runChecksRef.current();
+        },
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (hydrated && !busy) runChecksRef.current();
+  }, [hydrated, busy]);
+
+  // A chat that touched reminders (possibly across a paused and resumed run)
+  // re-syncs once the run ends so the new schedule takes effect immediately.
+  const reminderToolCallsRef = useRef(new Set<string>());
+  const remindersChangedRef = useRef(false);
 
   function setBusyState(next: boolean) {
     busyRef.current = next;
@@ -544,7 +585,8 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
     chatId: string,
     messageId: string,
     request: (signal: AbortSignal, onEvent: (event: ChatStreamEvent) => void) => Promise<void>,
-  ) {
+    observe?: (event: ChatStreamEvent) => void,
+  ): Promise<boolean> {
     const controller = new AbortController();
     activeRequestRef.current = controller;
     setBusyState(true);
@@ -553,6 +595,13 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
 
     try {
       const onEvent = (event: ChatStreamEvent) => {
+        observe?.(event);
+        if (event.type === "tool.started" && event.name === "manage_reminders") {
+          reminderToolCallsRef.current.add(event.callId);
+          remindersChangedRef.current = true;
+        } else if (event.type === "tool.completed" && reminderToolCallsRef.current.has(event.callId)) {
+          remindersChangedRef.current = true;
+        }
         if (activeRequestRef.current === controller && !controller.signal.aborted) {
           handleStreamEvent(chatId, messageId, event);
         }
@@ -594,6 +643,7 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
         });
         controller.signal.throwIfAborted();
       }
+      return true;
     } catch (error) {
       const cancelled = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
       updateAssistant(chatId, messageId, (message) => {
@@ -625,11 +675,16 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
             : message.work,
         };
       });
+      return false;
     } finally {
       if (activeRequestRef.current === controller) {
         activeRequestRef.current = null;
         autoToolRef.current = null;
         setBusyState(false);
+      }
+      if (remindersChangedRef.current && ownerRef.current) {
+        remindersChangedRef.current = false;
+        void syncReminders(ownerRef.current);
       }
     }
   }
@@ -705,6 +760,94 @@ export default function ChatLayout({ ctx, environment, onEnvironmentChange }: Ch
       }),
     );
   }
+
+  // Runs the oldest pending check reminder as a read-only turn in its own chat.
+  // Does nothing while Donna is busy or any chat awaits approval; it runs again
+  // when busy clears. A failed or stopped run stays pending.
+  async function runPendingCheck() {
+    const scope = ownerRef.current;
+    const store = persistedStoreRef.current;
+    if (!scope || !store || checkRunningRef.current || busyRef.current) return;
+    checkRunningRef.current = true;
+    let succeeded = false;
+    try {
+      const anyApproval = store.chats.some((chat) => chat.messages.some((message) => message.status === "approval"));
+      const check = await nextPendingCheck(scope, busyRef.current, anyApproval, failedChecksRef.current);
+      if (!check || busyRef.current) return;
+
+      const existing = check.chatId
+        ? persistedStoreRef.current?.chats.find((chat) => chat.id === check.chatId)
+        : undefined;
+      const chatId = existing?.id ?? crypto.randomUUID();
+      const content = `Scheduled check: ${check.title}`;
+      const now = Date.now();
+      const replyId = crypto.randomUUID();
+      const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content };
+      const assistantMessage: ChatMessage = {
+        id: replyId,
+        role: "assistant",
+        content: "",
+        status: "pending",
+        work: { startedAt: now, items: [] },
+      };
+      if (existing) {
+        updateChat(chatId, (chat) => ({
+          ...chat,
+          messages: [...chat.messages, userMessage, assistantMessage],
+          updatedAt: now,
+        }));
+      } else {
+        const chat: StoredChat = {
+          id: chatId,
+          title: `Reminder: ${check.title}`,
+          titleStatus: "manual",
+          messages: [userMessage, assistantMessage],
+          conversationId: null,
+          pinned: false,
+          createdAt: now,
+          updatedAt: now,
+        };
+        // activeChatId stays as it is: the user's current chat is not interrupted.
+        setChatStore((current) => ({ ...current, chats: [chat, ...current.chats] }));
+        await rememberCheckChat(check.id, chatId);
+      }
+
+      let report: ReminderCheckReport | null = null;
+      let finalText = "";
+      const ok = await executeRequest(
+        chatId,
+        replyId,
+        (signal, onEvent) =>
+          streamChat({
+            environment,
+            scope: ownerRef.current,
+            message: content,
+            conversationId: existing?.conversationId ?? undefined,
+            reminderCheckId: check.id,
+            signal,
+            onEvent,
+          }),
+        (event) => {
+          report ??= parseCheckReport(event);
+          if (event.type === "response.delta" && event.phase !== "commentary") finalText += event.delta;
+        },
+      );
+      if (!ok) {
+        failedChecksRef.current.add(check.id);
+        return;
+      }
+      const outcome = checkOutcome(report, finalText);
+      await finishCheck(check.id, check.title, outcome);
+      succeeded = true;
+      if (outcome.alert) void drawAttentionToCurrentWindow().catch(() => {});
+    } catch (error) {
+      console.warn("Reminder check failed", error);
+    } finally {
+      checkRunningRef.current = false;
+    }
+    if (succeeded) runChecksRef.current();
+  }
+  runChecksRef.current = () => void runPendingCheck();
 
   function handleCancel() {
     activeRequestRef.current?.abort();

@@ -26,6 +26,37 @@
   -ms-overflow-style: none; /* legacy Edge */
 }
 
+.composer-dictation-error {
+  margin-bottom: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-composer);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.composer-dictation-error p {
+  margin: 0;
+}
+
+.composer-dictation-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.composer-dictation-error-actions button {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .composer-textarea::-webkit-scrollbar {
   display: none; /* Chrome/Safari */
 }

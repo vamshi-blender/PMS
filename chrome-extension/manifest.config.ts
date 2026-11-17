@@ -13,6 +13,8 @@ export default defineManifest({
   // covers tabGroups.get/update/onRemoved for the session tab-group scope.
   permissions: [
     "activeTab",
+    "alarms",
+    "notifications",
     "scripting",
     "sidePanel",
     "storage",

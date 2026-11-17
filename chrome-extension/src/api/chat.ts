@@ -98,6 +98,8 @@ export async function streamChat(options: {
   environment: PmsEnvironment;
   scope: PmsScope | undefined;
   conversationId?: string;
+  /** Runs the server-side check for this reminder instead of a normal turn. */
+  reminderCheckId?: number;
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
 }) {
@@ -115,6 +117,9 @@ export async function streamChat(options: {
       ...(options.conversationId
         ? { conversationId: options.conversationId }
         : {}),
+      ...(options.reminderCheckId === undefined
+        ? {}
+        : { reminderCheckId: options.reminderCheckId }),
     },
     signal: options.signal,
     onEvent: options.onEvent,

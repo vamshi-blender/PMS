@@ -3,6 +3,8 @@ import OpenAI from "openai";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import { callerOwnsScope, requireCaller, scopeForbidden } from "@/lib/http/auth";
 import { streamDonnaRun } from "@/lib/agents/stream-run";
+import { getOwnedReminder, isRemindersConfigured } from "@/lib/reminders/store";
+import type { DonnaRunContext } from "@/lib/agents/donna";
 import { pmsScopeSchema } from "@/shared/pms-scope";
 import { pmsUserProfileSchema } from "@/shared/pms-user-profile";
 
@@ -15,6 +17,9 @@ const chatRequestSchema = z
     conversationId: z.string().min(1).max(200).optional(),
     scope: pmsScopeSchema,
     userProfile: pmsUserProfileSchema.nullable().optional(),
+    // Set by the extension when a due "check" reminder runs. The model input is
+    // then built here from the stored reminder; `message` is not used.
+    reminderCheckId: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -70,6 +75,23 @@ export async function POST(request: Request) {
   let conversationId = parsed.data.conversationId;
   const scope = parsed.data.scope;
   if (!callerOwnsScope(caller, scope)) return scopeForbidden(origin);
+  let reminderCheck: DonnaRunContext["reminderCheck"];
+  if (parsed.data.reminderCheckId !== undefined) {
+    if (!isRemindersConfigured()) {
+      return Response.json({ error: "Reminders are not available right now." }, { status: 503, headers: corsHeaders(origin) });
+    }
+    let reminder;
+    try {
+      reminder = await getOwnedReminder({ environment: scope.environment, userId: scope.userId }, parsed.data.reminderCheckId);
+    } catch (error) {
+      console.error("Donna reminders: loading a reminder check failed", error);
+      return Response.json({ error: "Could not load the reminder. Please try again." }, { status: 502, headers: corsHeaders(origin) });
+    }
+    if (!reminder || reminder.kind !== "check") {
+      return Response.json({ error: "No reminder check with this ID exists for this user." }, { status: 404, headers: corsHeaders(origin) });
+    }
+    reminderCheck = { id: reminder.id, title: reminder.title, instruction: reminder.instruction };
+  }
   const metadata = { pms_environment: scope.environment, pms_user: scope.userId, pms_organization: scope.organizationId };
   if (conversationId) {
     try {
@@ -104,11 +126,13 @@ export async function POST(request: Request) {
   }
 
   const stream = streamDonnaRun({
-    input: parsed.data.message,
+    input: reminderCheck
+      ? `This is an automatic scheduled reminder check, not a message typed by the user. Reminder [${reminderCheck.id}] "${reminderCheck.title}": ${reminderCheck.instruction}`
+      : parsed.data.message,
     conversationId,
     signal: request.signal,
     // Profile is a display-context snapshot, never authorization evidence.
-    context: { clientToolResults: {}, scope, userProfile: parsed.data.userProfile ?? undefined },
+    context: { clientToolResults: {}, scope, userProfile: parsed.data.userProfile ?? undefined, ...(reminderCheck ? { reminderCheck } : {}) },
   });
 
   return new Response(stream, {

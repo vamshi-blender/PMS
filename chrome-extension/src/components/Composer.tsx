@@ -93,6 +93,7 @@ export default function Composer({
   const [value, setValue] = useState("");
   const [dictationStatus, setDictationStatus] = useState<DictationStatus>("idle");
   const [dictationError, setDictationError] = useState<string | null>(null);
+  const [microphoneBlocked, setMicrophoneBlocked] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -403,6 +404,7 @@ export default function Composer({
   async function startDictation() {
     setDictationStatus("preparing");
     setDictationError(null);
+    setMicrophoneBlocked(false);
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setDictationStatus("idle");
@@ -453,11 +455,19 @@ export default function Composer({
       setDictationStatus("recording");
     } catch (error) {
       stopMediaStream();
+      if (!mountedRef.current) return;
       setDictationStatus("idle");
+      const name = error && typeof error === "object" && "name" in error ? error.name : "";
+      const blocked = name === "NotAllowedError" || name === "SecurityError";
+      setMicrophoneBlocked(blocked);
       setDictationError(
-        error instanceof DOMException && error.name === "NotAllowedError"
-          ? "Microphone access was denied. Allow it in Chrome and try again."
-          : "Donna could not access the microphone.",
+        blocked
+          ? "Microphone access is blocked. Allow Donna in Chrome’s microphone settings, then click the microphone to try again. If it stays blocked, check your computer’s microphone privacy settings."
+          : name === "NotFoundError"
+            ? "No microphone was found. Connect a microphone and try again."
+            : name === "NotReadableError"
+              ? "The microphone is unavailable. Check whether another app is using it, then try again."
+              : "Donna could not access the microphone. Check its connection and permissions, then try again.",
       );
     }
   }
@@ -469,6 +479,31 @@ export default function Composer({
       return;
     }
     if (dictationStatus === "idle" && !busy && !disabled) void startDictation();
+  }
+
+  async function openMicrophoneSettings() {
+    try {
+      const url = "chrome://settings/content/microphone";
+      // A tab created without a windowId can land in Donna's pop-out.
+      // Target a regular browser window and focus it so settings are visible.
+      const browserWindow = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+      if (browserWindow?.id !== undefined) {
+        // Focusing alone can leave a minimized window hidden on Windows.
+        // Restore it first; preserve maximized windows as they are.
+        if (browserWindow.state === "minimized") {
+          await chrome.windows.update(browserWindow.id, { state: "normal" });
+        }
+        await chrome.windows.update(browserWindow.id, { focused: true });
+        await chrome.tabs.create({ url, windowId: browserWindow.id, active: true });
+        await chrome.windows.update(browserWindow.id, { focused: true });
+      } else {
+        await chrome.windows.create({ url, type: "normal", focused: true });
+      }
+    } catch {
+      if (mountedRef.current) {
+        setDictationError("Open Chrome Settings → Privacy and security → Site settings → Microphone, allow Donna, then try again.");
+      }
+    }
   }
 
   function cancelDictation() {
@@ -550,6 +585,17 @@ export default function Composer({
 
   return (
     <div className="composer">
+      {dictationError && (
+        <div className="composer-dictation-error" role="alert">
+          <p>{dictationError}</p>
+          <div className="composer-dictation-error-actions">
+            {microphoneBlocked && (
+              <button type="button" onClick={() => { void openMicrophoneSettings(); }}>Open microphone settings</button>
+            )}
+            <button type="button" onClick={() => { setDictationError(null); setMicrophoneBlocked(false); }}>Dismiss</button>
+          </div>
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         className="composer-textarea"

@@ -16,6 +16,9 @@ import type { PmsScope } from "../../shared/pms-scope";
 import type { PmsUserProfile } from "../pms/user-profile";
 import { memoryInstructions } from "../memory/prompt";
 import { MEMORY_INSTRUCTIONS, manageMemory } from "../memory/tool";
+import { reminderInstructions } from "../reminders/prompt";
+import { REMINDER_INSTRUCTIONS, manageReminders } from "../reminders/tool";
+import { REMINDER_CHECK_INSTRUCTIONS, hiddenDuringReminderCheck, reportReminderCheck } from "../reminders/check";
 import { SKILL_INSTRUCTIONS, skillInstructions } from "../skills/prompt";
 import { manageProceduralMemory } from "../skills/tool";
 import type { Skill, SkillSummary } from "../skills/store";
@@ -34,6 +37,8 @@ export interface DonnaRunContext {
   conversationId?: string;
   skillCatalog?: SkillSummary[];
   loadedSkills?: Skill[];
+  /** Set when this run is an automatic reminder check (read-only; see lib/reminders/check.ts). */
+  reminderCheck?: { id: number; title: string; instruction: string };
 }
 
 // Every tool that needsApproval must include these fields in its parameters.
@@ -77,6 +82,7 @@ const getCurrentPageContext = tool<
     "Ask the browser extension for the active page URL, title, selected text, and visible page text. Use only when the user's request depends on the page they are viewing.",
   parameters: pageContextParameters,
   needsApproval: async () => true,
+  isEnabled: hiddenDuringReminderCheck,
   async execute(_input, runContext, details) {
     const callId = details?.toolCall?.callId;
     if (!callId) {
@@ -225,6 +231,7 @@ const submitPmsAction = tool<
     "Prepare one PMS action (leave application, worklog or issue status change) for the extension's approval card. Calling this pauses for approval; it does not create or change a PMS record until the user approves the card. Once valid fields are available, call this directly instead of asking for chat confirmation. An explicitly labeled estimated worklog end may be proposed on the card. After approval, execution uses the user's PMS session and creates a real change.",
   parameters: submitPmsActionParameters,
   needsApproval: async () => true,
+  isEnabled: hiddenDuringReminderCheck,
   async execute(_input, runContext, details) {
     return relayClientResult(
       runContext,
@@ -265,7 +272,11 @@ If the user declines page access, continue without it when possible and state th
 Do not invent tool results, private data, or completed actions.
 Do not use em dashes in your final answer. Use a colon or parentheses instead.
 
-${MEMORY_INSTRUCTIONS}`;
+${MEMORY_INSTRUCTIONS}
+
+${REMINDER_INSTRUCTIONS}
+
+${REMINDER_CHECK_INSTRUCTIONS}`;
 
 export const donnaAgent = new Agent<DonnaRunContext>({
   name: "Donna",
@@ -273,11 +284,12 @@ export const donnaAgent = new Agent<DonnaRunContext>({
   // Rebuilt per model call so memory changes (including ones made earlier in
   // the same run) are always reflected, and expired entries drop out.
   instructions: async (runContext) => {
-    const [memory, skills] = await Promise.all([
+    const [memory, reminders, skills] = await Promise.all([
       memoryInstructions(runContext.context?.scope),
+      reminderInstructions(runContext.context?.scope),
       skillInstructions(runContext.context),
     ]);
-    return DONNA_BASE_INSTRUCTIONS + memory + skills;
+    return DONNA_BASE_INSTRUCTIONS + memory + reminders + skills;
   },
   tools: [
     getCurrentPageContext,
@@ -285,6 +297,8 @@ export const donnaAgent = new Agent<DonnaRunContext>({
     submitPmsAction,
     listPmsCapabilities,
     manageMemory,
+    manageReminders,
     manageProceduralMemory,
+    reportReminderCheck,
   ],
 });

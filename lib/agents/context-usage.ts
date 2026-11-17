@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { DONNA_BASE_INSTRUCTIONS, donnaAgent } from "./donna";
+import { REMINDER_CHECK_REPORT_TOOL } from "../../shared/reminders";
 import { withPromptContext } from "../../shared/prompt-context";
 import type { PmsEnvironment } from "../../shared/pms-scope";
 import { userProfilePrompt, type PmsUserProfile } from "../pms/user-profile";
@@ -31,7 +32,8 @@ export async function countBaselineContextTokens(
       instructions,
       input: donnaPromptInput("", environment),
       tools: tools.flatMap((tool) =>
-        tool.type === "function"
+        // report_reminder_check is hidden in normal chats.
+        tool.type === "function" && tool.name !== REMINDER_CHECK_REPORT_TOOL
           ? [{
               type: "function" as const,
               name: tool.name,

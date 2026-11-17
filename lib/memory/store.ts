@@ -1,5 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { PmsEnvironment } from "../../shared/pms-scope";
+import { retryingFetch } from "../http/retrying-fetch.mjs";
+export { retryingFetch } from "../http/retrying-fetch.mjs";
 
 // Donna's long-term memory in Supabase (see supabase/migrations). Two tables:
 //  - user_memories: private to one PMS user in one environment.
@@ -41,39 +43,8 @@ export function isMemoryConfigured(): boolean {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
-const RETRY_DELAYS_MS = [250, 750];
-// Failures where the connection was never established, so the request cannot
-// have reached Supabase and repeating it cannot apply a write twice.
-const NEVER_CONNECTED_CODES = new Set([
-  "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT",
-]);
-
-function neverConnected(error: unknown): boolean {
-  const cause = (error as { cause?: { code?: string; message?: string } } | null)?.cause;
-  if (!cause) return false;
-  return NEVER_CONNECTED_CODES.has(cause.code ?? "") ||
-    (cause.code === "ECONNRESET" && /before secure TLS connection was established/.test(cause.message ?? ""));
-}
-
-/**
- * fetch with short retries for dropped connections. Reads retry on any
- * network error; writes only when the request provably never left.
- */
-export const retryingFetch: typeof fetch = async (input, init) => {
-  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fetch(input, init);
-    } catch (error) {
-      const retryable = error instanceof TypeError && !init?.signal?.aborted &&
-        (method === "GET" || method === "HEAD" || neverConnected(error));
-      if (!retryable || attempt >= RETRY_DELAYS_MS.length) throw error;
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
-    }
-  }
-};
-
-function supabase(): SupabaseClient {
+/** The shared service-role Supabase client (also used by reminders). */
+export function supabase(): SupabaseClient {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) throw new Error("Supabase is not configured.");

@@ -2,6 +2,7 @@ import { tool } from "@openai/agents";
 import { z } from "zod";
 import type { DonnaRunContext } from "../agents/donna";
 import { expiryInstant } from "./prompt";
+import { hiddenDuringReminderCheck } from "../reminders/check";
 import {
   MEMORY_CONTENT_LIMIT,
   addUserMemory,
@@ -123,6 +124,7 @@ export const manageMemory = tool<typeof manageMemoryParameters, DonnaRunContext,
   description:
     "Add, update or delete an entry in Donna's long-term memory. User-scope changes take effect immediately and only affect this user. Organization-scope add and update only submit a proposal for administrator review; organization delete is not allowed.",
   parameters: manageMemoryParameters,
+  isEnabled: hiddenDuringReminderCheck,
   async execute(input, runContext) {
     return runMemoryAction(runContext?.context, input);
   },

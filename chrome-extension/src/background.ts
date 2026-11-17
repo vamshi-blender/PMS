@@ -10,9 +10,19 @@ import {
   getSessionTabGroupId,
 } from "./api/pmsSession";
 import { applyMode, getSavedMode, POPOUT_PATH } from "./mode";
+import {
+  handleReminderAlarm,
+  handleReminderButton,
+  isCheckNotification,
+  reminderIdFromNotification,
+  restoreReminders,
+} from "./reminders/deliver";
 
 async function init() {
   await applyMode(await getSavedMode());
+  // The badge and alarms don't survive a browser restart, so rebuild them
+  // from the stored reminders.
+  await restoreReminders();
 }
 
 chrome.runtime.onInstalled.addListener(init);
@@ -97,6 +107,44 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     openPopout().then(() => sendResponse(true));
     return true;
   }
+});
+
+// Reminder alarms and toasts. The listeners must be registered here, at the
+// top level, so Chrome can wake a suspended worker for them.
+chrome.alarms.onAlarm.addListener(handleReminderAlarm);
+
+// Clicking a reminder toast brings Donna to the front: the pop-out if it is
+// open, otherwise a new pop-out when that is the saved mode, otherwise the
+// browser window hosting the side panel. A closed side panel is not reopened:
+// sidePanel.open() needs a user gesture that a toast click does not reliably
+// carry. The reminder stays due until the user marks it done.
+async function focusDonnaWindow(): Promise<void> {
+  const { popoutWindowId } = await chrome.storage.session.get("popoutWindowId");
+  if (typeof popoutWindowId === "number") {
+    try {
+      await chrome.windows.update(popoutWindowId, { focused: true });
+      return;
+    } catch {
+      // Window was closed; fall through.
+    }
+  }
+  if ((await getSavedMode()) === "popout") {
+    await openPopout();
+    return;
+  }
+  const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+  if (win.id !== undefined) await chrome.windows.update(win.id, { focused: true });
+}
+
+chrome.notifications.onClicked.addListener(async (notificationId) => {
+  if (reminderIdFromNotification(notificationId) === null && !isCheckNotification(notificationId)) return;
+  await chrome.notifications.clear(notificationId);
+  await focusDonnaWindow();
+});
+
+chrome.notifications.onButtonClicked.addListener(async (notificationId, buttonIndex) => {
+  const id = reminderIdFromNotification(notificationId);
+  if (id !== null) await handleReminderButton(id, buttonIndex);
 });
 
 // Keyboard-shortcut equivalent of clicking the toolbar icon: does whatever
